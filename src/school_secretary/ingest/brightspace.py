@@ -221,8 +221,9 @@ class BrightspaceClient:
         self.settings = settings or get_settings()
         if not self.settings.session_path.exists():
             raise IngestError(
-                f"Missing {self.settings.session_path}. "
-                "Run `uv run school-secretary login` first."
+                f"Missing {self.settings.storage_state_path}. "
+                "Run `uv run school-secretary login` first (NetID, password, Duo). "
+                "Headless refresh reuses that JSON so MFA is not prompted every time."
             )
         self.cookies = cookies_from_session(self.settings.session_path)
         self.base = self.settings.onq_base_url.rstrip("/")

@@ -2,20 +2,25 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 from pathlib import Path
 
 from school_secretary.config import Settings, get_settings
 
 ONQ_HOME = "/d2l/home"
 LOGIN_WAIT_MESSAGE = """
-A Chromium window should now be open on https://onq.queensu.ca/d2l/home
+A real Chromium window should now be open on the Queen's onQ login page
+(https://onq.queensu.ca/d2l/home).
 
-1. Complete Queen's NetID SSO in that window (username, password, any MFA).
-2. Wait until you can see your onQ homepage (course tiles / the Brightspace navbar).
-3. Return to this terminal and press Enter.
+1. Type your Queen's NetID and password.
+2. Approve Duo MFA when prompted.
+3. Wait until you can see the onQ homepage (course tiles / Brightspace navbar).
+4. Return to this terminal and press Enter.
 
-Cookies are then written to {session_path} and the persistent profile is kept in
-{profile_dir} for later headless refreshes.
+Playwright storage state is saved to {storage_state_path}
+(and copied to {session_copy} so older readers still work).
+The persistent profile stays in {profile_dir}. Headless ingest uses those
+cookies afterward so Duo is not prompted on every refresh.
 """.strip()
 
 
@@ -24,11 +29,19 @@ def cookies_from_session(path: Path) -> dict[str, str]:
     return {cookie["name"]: cookie["value"] for cookie in data.get("cookies", [])}
 
 
+def _write_storage_state_copy(settings: Settings, source: Path) -> None:
+    copy = settings.session_json_copy_path
+    if source.resolve() == copy.resolve():
+        return
+    shutil.copyfile(source, copy)
+
+
 async def _login_async(settings: Settings) -> Path:
     from playwright.async_api import async_playwright
 
     settings.ensure_dirs()
     settings.browser_profile_dir.mkdir(parents=True, exist_ok=True)
+    dest = settings.storage_state_path
     url = settings.onq_base_url.rstrip("/") + ONQ_HOME
     async with async_playwright() as playwright:
         context = await playwright.chromium.launch_persistent_context(
@@ -40,15 +53,18 @@ async def _login_async(settings: Settings) -> Path:
         await page.goto(url, wait_until="domcontentloaded")
         print(
             LOGIN_WAIT_MESSAGE.format(
-                session_path=settings.session_path,
+                storage_state_path=dest,
+                session_copy=settings.session_json_copy_path,
                 profile_dir=settings.browser_profile_dir,
             )
         )
         await asyncio.to_thread(input, "Press Enter after you can see the onQ homepage...")
-        await context.storage_state(path=str(settings.session_path))
+        await context.storage_state(path=str(dest))
         await context.close()
-    print(f"Saved session cookies to {settings.session_path}")
-    return settings.session_path
+    _write_storage_state_copy(settings, dest)
+    print(f"Saved Playwright storage state to {dest}")
+    print(f"Copied to {settings.session_json_copy_path} as well.")
+    return dest
 
 
 def login(settings: Settings | None = None) -> Path:
@@ -59,16 +75,19 @@ def login(settings: Settings | None = None) -> Path:
 async def _headless_context(settings: Settings):
     from playwright.async_api import async_playwright
 
-    if not settings.session_path.exists():
+    state = settings.session_path
+    if not state.exists():
         raise FileNotFoundError(
-            f"No session file at {settings.session_path}. "
-            "Run `uv run school-secretary login` once with a visible browser."
+            f"No storage state at {settings.storage_state_path}. "
+            "Run `uv run school-secretary login` once with a visible browser "
+            "(NetID, password, Duo). Headless ingest will reuse that JSON so MFA "
+            "is not prompted every time."
         )
     playwright = await async_playwright().start()
     context = await playwright.chromium.launch_persistent_context(
         user_data_dir=str(settings.browser_profile_dir),
         headless=True,
-        storage_state=str(settings.session_path),
+        storage_state=str(state),
         viewport={"width": 1280, "height": 900},
     )
     return playwright, context

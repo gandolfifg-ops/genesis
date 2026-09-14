@@ -50,7 +50,7 @@ Re-running `demo` or `ingest --fixtures` is idempotent (same D2L ids upsert).
 | File | Where | Purpose |
 | --- | --- | --- |
 | `.env.example` | repository root (committed) | Template with every variable this repo reads |
-| `.env` | repository root (gitignored) | Your real secrets. Create with `cp .env.example .env` |
+| `.env` | repository root (gitignored) | Your real secrets. Already present with placeholders; or `cp .env.example .env` |
 
 Variable names (exact):
 
@@ -59,6 +59,7 @@ Variable names (exact):
 | `TELEGRAM_BOT_TOKEN` | only for `school-secretary telegram` | python-telegram-bot |
 | `TELEGRAM_CHAT_ID` | optional | proactive 8:00 / 20:00 briefings if you never sent `/start` |
 | `OPENAI_API_KEY` | optional | function calling + richer RAG synthesis |
+| `ANTHROPIC_API_KEY` | optional | reserved; OpenAI is used if keyed, otherwise local/mock |
 | `OPENAI_MODEL` | optional, default `gpt-4o-mini` | OpenAI model id |
 | `ONQ_BASE_URL` | optional, default `https://onq.queensu.ca` | live ingest |
 | `MCP_HOST` / `MCP_PORT` | optional, default `127.0.0.1` / `43147` | MCP HTTP bind |
@@ -82,8 +83,10 @@ The bot **starts without a token only to tell you how to get one** (exit code 1)
 **Exact `.env` variable this repo uses**
 
 ```bash
-TELEGRAM_BOT_TOKEN=123456789:AAHyourTokenHere
+TELEGRAM_BOT_TOKEN="your_bot_token_here"
 ```
+
+A gitignored `.env` at the repo root is created with that placeholder (and the other keys from `.env.example`). Replace the placeholder with BotFather’s token.
 
 Optional, for unsolicited morning/evening messages before you have chatted with the bot:
 
@@ -141,20 +144,20 @@ uv run school-secretary login
 
 **What you should see**
 
-1. A **Chromium** window opens (Playwright persistent profile, 1280×900).
-2. It navigates to **`https://onq.queensu.ca/d2l/home`**.
-3. Queen’s NetID SSO appears (username / password / MFA as your account requires).
-4. After a successful login you should see the **onQ / Brightspace homepage** (course tiles and the D2L navbar).
-5. Leave that window as-is, switch back to the terminal, and **press Enter**.
+1. A **real Chromium** window opens (Playwright persistent profile, 1280×900).
+2. It goes to the Queen’s onQ login at **`https://onq.queensu.ca/d2l/home`**.
+3. Type your **NetID** and **password**, then approve **Duo MFA**.
+4. When you reach the **onQ homepage** (course tiles / Brightspace navbar), leave the window open, switch back to the terminal, and **press Enter**.
 
 **Where cookies are saved**
 
 | Path | What |
 | --- | --- |
-| `session.json` | Playwright `storage_state` (cookies + origins), **repository root**, gitignored |
+| `storage_state.json` | Playwright `storage_state` (cookies + origins), **repository root**, gitignored — this is the file ingest reads |
+| `session.json` | Copy of the same JSON (also gitignored) so anything still looking for the old name keeps working |
 | `data/browser/` | Persistent Chromium user-data dir for the same profile |
 
-The login command prints both paths when it finishes.
+The login command prints these paths when it finishes. Duo is only needed during this one visible login.
 
 **Silent / headless refresh after that**
 
@@ -162,21 +165,21 @@ The login command prints both paths when it finishes.
 uv run school-secretary ingest --live
 ```
 
-This does **not** open a window. It:
+This does **not** open a window and should **not** prompt Duo again. It:
 
-1. Loads cookies from `session.json`
+1. Loads cookies from `storage_state.json` (or `session.json` if that is the only file present)
 2. Calls Brightspace LE APIs with those cookies:
    - `/d2l/api/lp/1.47/enrollments/myenrollments/`
    - `/d2l/api/le/1.47/{orgUnitId}/news/`
    - `/d2l/api/le/1.47/{orgUnitId}/dropbox/folders/`
 3. Saves raw JSON under `data/raw/{orgUnitId}/`
-4. Downloads PDF attachments over HTTP; if that fails, a **headless** Chromium context (same profile + `session.json`) scrapes `a[href]` PDF links as a DOM fallback
+4. Downloads PDF attachments over HTTP; if that fails, a **headless** Chromium context (same profile + `storage_state.json`) scrapes `a[href]` PDF links as a DOM fallback
 5. Upserts Courses / Assignments / Announcements / Documents into SQLite (idempotent)
 
-If `session.json` is missing:
+If `storage_state.json` is missing:
 
 ```text
-Missing .../session.json. Run `uv run school-secretary login` first.
+Missing .../storage_state.json. Run `uv run school-secretary login` first (NetID, password, Duo).
 ```
 
 SSO session capture on a personal machine is the intended path; this repo only stores cookies locally.
@@ -224,7 +227,7 @@ src/school_secretary/
   telegram_app/
 data/fixtures/pdfs/   generated on ingest
 data/raw/             gitignored raw JSON + PDFs
-session.json          gitignored cookies
+storage_state.json    gitignored Playwright cookies (session.json is a copy)
 ```
 
 ## Academic integrity

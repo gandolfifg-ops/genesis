@@ -65,7 +65,7 @@ def ingest(
 
 @app.command()
 def login() -> None:
-    """One-time Queen's SSO in a visible Chromium window; saves session.json."""
+    """One-time Queen's SSO in a visible Chromium window; saves storage_state.json."""
     from school_secretary.ingest.browser import login as browser_login
 
     browser_login(get_settings())

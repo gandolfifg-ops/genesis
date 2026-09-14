@@ -27,13 +27,14 @@ class Settings(BaseSettings):
 
     openai_api_key: str = ""
     openai_model: str = "gpt-4o-mini"
+    anthropic_api_key: str = ""
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
     onq_base_url: str = "https://onq.queensu.ca"
     mcp_host: str = "127.0.0.1"
     mcp_port: int = 43147
     school_secretary_data_dir: Path = ROOT / "data"
-    school_secretary_session_path: Path = ROOT / "session.json"
+    school_secretary_session_path: Path = ROOT / "storage_state.json"
     timezone: str = "America/Toronto"
 
     @property
@@ -41,8 +42,23 @@ class Settings(BaseSettings):
         return Path(self.school_secretary_data_dir)
 
     @property
-    def session_path(self) -> Path:
+    def storage_state_path(self) -> Path:
         return Path(self.school_secretary_session_path)
+
+    @property
+    def session_json_copy_path(self) -> Path:
+        return ROOT / "session.json"
+
+    @property
+    def session_path(self) -> Path:
+        """Playwright storage state. Prefers storage_state.json, then a legacy session.json copy."""
+        primary = self.storage_state_path
+        if primary.exists():
+            return primary
+        legacy = self.session_json_copy_path
+        if legacy.exists():
+            return legacy
+        return primary
 
     @property
     def database_path(self) -> Path:
