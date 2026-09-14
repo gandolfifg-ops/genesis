@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -113,7 +112,7 @@ def _upsert_event(
         row = CalendarEvent(
             source_kind=kind,
             source_id=source_id,
-            uid=f"ss-{kind}-{source_id}-{uuid4().hex[:8]}@school-secretary.local",
+            uid=f"ss-{kind}-{source_id}@school-secretary.local",
             title=title,
             start_at=start,
             end_at=end,

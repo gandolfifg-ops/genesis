@@ -35,8 +35,9 @@ def demo() -> None:
     print(counts)
     print("\n== 2. Triage + plan + index PDFs into ChromaDB ==")
     print(run_agents(settings))
-    print("\n== 3. RAG: late penalty for CISC 235 ==")
-    print(ask("What is the late penalty for CISC 235?", settings=settings))
+    print("\n== 3. RAG: late penalties (course-scoped) ==")
+    print("CISC 235:", ask("What is the late penalty for CISC 235?", settings=settings))
+    print("CISC 365:", ask("What is the late penalty for CISC 365?", settings=settings))
     print("\n== 4. Planner: Lab 2 binary search trees ==")
     print(plan_and_format("Binary Search", settings=settings))
     print("\n== 5. Execution/Drafting scaffold (stubs only) ==")
@@ -173,6 +174,31 @@ def calendar_sync_cmd() -> None:
     from school_secretary.calendar_sync import sync_calendar
 
     print(sync_calendar(get_settings()))
+
+
+@app.command()
+def habits() -> None:
+    """Print this week's study minutes, streak, and a suggested block."""
+    from school_secretary.agents.memory import format_habit_summary, suggested_block
+    from school_secretary.db.session import session_scope
+
+    settings = get_settings()
+    init_db(settings)
+    with session_scope(settings) as session:
+        print(format_habit_summary(session))
+        print(suggested_block(session))
+
+
+@app.command()
+def status() -> None:
+    """Print SQLite row counts (safe to run repeatedly)."""
+    from school_secretary.db.session import session_scope
+    from school_secretary.ingest.brightspace import snapshot_counts
+
+    settings = get_settings()
+    init_db(settings)
+    with session_scope(settings) as session:
+        print(snapshot_counts(session))
 
 
 @app.command("index-docs")

@@ -83,6 +83,7 @@ class Document(Base):
 
 class SubTask(Base):
     __tablename__ = "subtasks"
+    __table_args__ = (UniqueConstraint("assignment_id", "sort_order", name="uq_subtask_order"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     assignment_id: Mapped[int] = mapped_column(ForeignKey("assignments.id"), index=True)

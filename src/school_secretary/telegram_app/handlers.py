@@ -97,6 +97,14 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "sync_calendar",
+            "description": "Push deadlines to Google Calendar or write a local ICS file.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
 ]
 
 
@@ -127,12 +135,26 @@ def dispatch_tool(name: str, arguments: dict, settings: Settings) -> str:
             return f"Logged {event.minutes} minutes."
     if name == "scaffold_assignment":
         return scaffold_and_describe(arguments["assignment"], settings=settings)
+    if name == "sync_calendar":
+        from school_secretary.calendar_sync import sync_calendar
+
+        result = sync_calendar(settings)
+        return (
+            f"Calendar sync via {result['transport']}: {result['events']} events. "
+            f"ICS: {result['ics_path']}"
+        )
     return f"Unknown tool {name}"
 
 
 def route_locally(text: str, settings: Settings) -> str:
     stripped = text.strip()
     lower = stripped.lower()
+    if lower in {"/start", "start", "help", "/help"}:
+        return (
+            "My School Secretary is on. Commands: /ask /briefing /evening /plan /scaffold "
+            "/email /study /habits /calendar\n"
+            "I never complete assignments — outlines and TODOs only."
+        )
     if lower.startswith("/ask"):
         return ask(stripped[4:].strip() or stripped, settings=settings)
     if "briefing" in lower or lower in {"morning", "/briefing"}:
@@ -149,6 +171,20 @@ def route_locally(text: str, settings: Settings) -> str:
     if lower.startswith("/scaffold") or "scaffold" in lower:
         target = re.sub(r"^/?scaffold\s*", "", stripped, flags=re.I) or "Lab 2"
         return scaffold_and_describe(target, settings=settings)
+    if lower.startswith("/calendar") or lower == "calendar":
+        from school_secretary.calendar_sync import sync_calendar
+
+        result = sync_calendar(settings)
+        extra = f" Error: {result['error']}" if result.get("error") else ""
+        return (
+            f"Synced {result['events']} deadlines via {result['transport']}. "
+            f"ICS at {result['ics_path']}.{extra}"
+        )
+    if lower.startswith("/habits") or lower in {"habits", "streak"}:
+        from school_secretary.agents.memory import format_habit_summary, suggested_block
+
+        with session_scope(settings) as session:
+            return format_habit_summary(session) + "\n" + suggested_block(session)
     if lower.startswith("/study") or lower.startswith("study "):
         parts = stripped.split()
         minutes = 30

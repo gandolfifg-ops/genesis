@@ -38,7 +38,8 @@ async def _cmd_start(update, context) -> None:
     if update.effective_chat:
         remember_chat_id(settings.telegram_chat_id_path, update.effective_chat.id)
     await update.message.reply_text(
-        "My School Secretary is on. Commands: /ask /briefing /evening /plan /scaffold /email /study\n"
+        "My School Secretary is on. Commands: /ask /briefing /evening /plan /scaffold "
+        "/email /study /habits /calendar\n"
         "Free-text questions go through RAG (OpenAI if keyed, otherwise local extractive answers).\n"
         "I will never complete assignments — outlines and TODOs only."
     )
@@ -86,6 +87,16 @@ async def _cmd_study(update, context) -> None:
     await update.message.reply_text(handle_user_text("/study " + " ".join(context.args), settings)[:4000])
 
 
+async def _cmd_calendar(update, context) -> None:
+    settings: Settings = context.bot_data["settings"]
+    await update.message.reply_text(handle_user_text("/calendar", settings)[:4000])
+
+
+async def _cmd_habits(update, context) -> None:
+    settings: Settings = context.bot_data["settings"]
+    await update.message.reply_text(handle_user_text("/habits", settings)[:4000])
+
+
 async def _on_text(update, context) -> None:
     if not update.message or not update.message.text:
         return
@@ -119,6 +130,7 @@ def run_bot(settings: Settings | None = None) -> None:
     application = Application.builder().token(token).build()
     application.bot_data["settings"] = settings
     application.add_handler(CommandHandler("start", _cmd_start))
+    application.add_handler(CommandHandler("help", _cmd_start))
     application.add_handler(CommandHandler("ask", _cmd_ask))
     application.add_handler(CommandHandler("briefing", _cmd_briefing))
     application.add_handler(CommandHandler("evening", _cmd_evening))
@@ -126,6 +138,8 @@ def run_bot(settings: Settings | None = None) -> None:
     application.add_handler(CommandHandler("scaffold", _cmd_scaffold))
     application.add_handler(CommandHandler("email", _cmd_email))
     application.add_handler(CommandHandler("study", _cmd_study))
+    application.add_handler(CommandHandler("calendar", _cmd_calendar))
+    application.add_handler(CommandHandler("habits", _cmd_habits))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _on_text))
 
     jobs = application.job_queue

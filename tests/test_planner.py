@@ -39,3 +39,7 @@ def test_coding_lab_gets_micro_deadlines(tmp_path, monkeypatch):
         assert assignment.planned is True
         assert tasks[0].due_at < tasks[-1].due_at
         assert tasks[-1].due_at <= due
+        tasks[1].status = "done"
+        again = plan_assignment(session, assignment, now=now)
+        assert again[1].status == "done"
+        assert len(again) == len(tasks)

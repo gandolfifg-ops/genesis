@@ -6,11 +6,16 @@ from zoneinfo import ZoneInfo
 from sqlalchemy.orm import Session
 
 from school_secretary.agents.drafting import describe_scaffold, scaffold_assignment
-from school_secretary.agents.memory import format_habit_summary, suggest_focus, suggested_block
+from school_secretary.agents.memory import (
+    format_habit_summary,
+    record_study_session,
+    suggest_focus,
+    suggested_block,
+)
 from school_secretary.agents.planner import format_plan, plan_unplanned
 from school_secretary.agents.triage import triage_pending
 from school_secretary.config import Settings, get_settings
-from school_secretary.db.models import Announcement, Assignment, Course
+from school_secretary.db.models import Announcement, Assignment, Course, SubTask
 from school_secretary.db.session import session_scope
 from school_secretary.rag.index import index_documents
 from school_secretary.rag.query import answer_question
@@ -140,10 +145,44 @@ def render_briefing(kind: str, settings: Settings | None = None, now: datetime |
                 lines.append(f"  - {row.course.code}: {row.title} ({due_s})")
         else:
             lines.append("  (nothing in the next 21 days)")
+        pending_steps = (
+            session.query(SubTask)
+            .filter(SubTask.status == "pending")
+            .filter(SubTask.due_at.is_not(None))
+            .order_by(SubTask.due_at.asc())
+            .limit(5)
+            .all()
+        )
+        lines.append("")
         if kind == "evening":
-            lines += ["", "Wrap-up: log what you actually studied so tomorrow's plan is honest."]
+            lines.append("Open micro-deadlines:")
         else:
-            lines += ["", "Ask me about a syllabus policy, or run /plan on the next lab."]
+            lines.append("Next planned steps:")
+        if pending_steps:
+            for task in pending_steps:
+                due = task.due_at
+                due_s = due.strftime("%a %b %d %H:%M") if due else "?"
+                code = task.assignment.course.code if task.assignment else ""
+                lines.append(f"  - {code}: {task.title} ({due_s})")
+        else:
+            lines.append("  (run /plan on an assignment to generate micro-deadlines)")
+        ics = settings.calendar_dir / "school-secretary.ics"
+        lines.append("")
+        if ics.exists():
+            lines.append(f"Calendar: {ics} — import into Google, or set GOOGLE_OAUTH_* and run calendar-sync.")
+        else:
+            lines.append("Calendar: run `uv run school-secretary calendar-sync` to write an ICS file.")
+        record_study_session(
+            session,
+            minutes=0,
+            notes=f"{kind} briefing",
+            kind="briefing_read",
+            when=now,
+        )
+        if kind == "evening":
+            lines += ["", "Wrap-up: log what you actually studied so tomorrow's plan is honest. /study CISC 235 45"]
+        else:
+            lines += ["", "Ask a syllabus question with /ask, or /plan the next lab. Scaffolding only — you write the work."]
         return "\n".join(lines)
 
 
@@ -157,9 +196,9 @@ def plan_and_format(query: str, settings: Settings | None = None) -> str:
         assignment = find_assignment(session, query)
         if assignment is None:
             return f"No assignment matched {query!r}."
-        if not assignment.subtasks:
-            from school_secretary.agents.planner import plan_assignment
+        from school_secretary.agents.planner import plan_assignment
 
+        if not assignment.subtasks:
             plan_assignment(session, assignment)
             session.refresh(assignment)
         return format_plan(assignment)

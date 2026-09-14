@@ -92,7 +92,18 @@ def build_app(settings: Settings | None = None):
             {
                 "ok": True,
                 "transport": "cloud" if cloud_configured(settings) else "mock",
-                "commands": ["/start", "/ask", "/briefing", "/evening", "/plan", "/scaffold", "/email", "/study"],
+                "commands": [
+                    "/start",
+                    "/ask",
+                    "/briefing",
+                    "/evening",
+                    "/plan",
+                    "/scaffold",
+                    "/email",
+                    "/study",
+                    "/habits",
+                    "/calendar",
+                ],
             }
         )
 

@@ -39,6 +39,9 @@ def test_offline_demo_rag_plan_briefing(tmp_path, monkeypatch):
     briefing = render_briefing("morning", settings=settings, now=DEMO_NOW)
     assert "CISC 235" in briefing
     assert "extended" in briefing.lower() or "Lab 1" in briefing
+    assert "Next planned steps:" in briefing
+    cisc365 = ask("What is the late penalty for CISC 365?", settings=settings)
+    assert "5%" in cisc365 or "5 %" in cisc365
 
 
 def test_coding_scaffold_is_not_a_solution(tmp_path, monkeypatch):

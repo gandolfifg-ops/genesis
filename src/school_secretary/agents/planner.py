@@ -56,22 +56,37 @@ def plan_assignment(session: Session, assignment: Assignment, now: datetime | No
     # Real habit data, not seed-only: no minutes → front-load; lots of minutes → extra buffer.
     extra = 1.5 if studied <= 0 else (0.2 if studied >= 90 else 0.5)
     span = max((due - now).total_seconds(), 3600)
-    session.query(SubTask).filter_by(assignment_id=assignment.id).delete()
+    existing = {
+        row.sort_order: row
+        for row in session.query(SubTask).filter_by(assignment_id=assignment.id).all()
+    }
     created: list[SubTask] = []
+    kept: set[int] = set()
     for index, title in enumerate(steps):
         fraction = (index + 1) / (len(steps) + extra)
         micro_due = now + timedelta(seconds=span * fraction)
         if micro_due > due - timedelta(hours=4) and index < len(steps) - 1:
             micro_due = due - timedelta(hours=12 * (len(steps) - index))
-        row = SubTask(
-            assignment_id=assignment.id,
-            title=title,
-            due_at=micro_due,
-            status="pending",
-            sort_order=index,
-        )
-        session.add(row)
+        row = existing.get(index)
+        if row is None:
+            row = SubTask(
+                assignment_id=assignment.id,
+                title=title,
+                due_at=micro_due,
+                status="pending",
+                sort_order=index,
+            )
+            session.add(row)
+        else:
+            row.title = title
+            row.sort_order = index
+            if row.status != "done":
+                row.due_at = micro_due
         created.append(row)
+        kept.add(index)
+    for order, row in existing.items():
+        if order not in kept:
+            session.delete(row)
     assignment.planned = True
     session.flush()
     return created

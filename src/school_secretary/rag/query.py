@@ -70,9 +70,9 @@ def extractive_answer(question: str, retrievals: list[Retrieval]) -> str:
         if item.doc_type == "syllabus":
             points += 0.8
         lowered = text.lower()
-        if wants_late and "late" in lowered and "penalt" in lowered:
+        if wants_late and "late" in lowered and ("penalt" in lowered or "late policy" in lowered):
             points += 3.0
-        if "10%" in text or "10 %" in text:
+        if wants_late and re.search(r"\d+\s*%", text):
             points += 1.0
         return points
 

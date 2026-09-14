@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 from school_secretary.config import Settings, get_settings
 from school_secretary.db.models import Course
 from school_secretary.db.session import init_db, session_scope
-from school_secretary.ingest.brightspace import ingest_payloads
+from school_secretary.ingest.brightspace import ingest_payloads, snapshot_counts
 from school_secretary.rag.extract import write_pdf
 
 TZ = ZoneInfo("America/Toronto")
@@ -234,10 +234,6 @@ def seed_habits(settings: Settings) -> int:
     from school_secretary.agents.memory import record_study_session
     from school_secretary.db.models import StudyHabitEvent
 
-    with session_scope(settings) as session:
-        if session.query(StudyHabitEvent).count():
-            return 0
-
     seeds = [
         ("CISC 235", 90, "Read BST chapter", DEMO_NOW - timedelta(days=2, hours=2)),
         ("CISC 365", 60, "DP practice problems", DEMO_NOW - timedelta(days=1, hours=4)),
@@ -248,6 +244,18 @@ def seed_habits(settings: Settings) -> int:
     with session_scope(settings) as session:
         for code, minutes, notes, when in seeds:
             course = session.query(Course).filter(Course.code == code).one()
+            already = (
+                session.query(StudyHabitEvent)
+                .filter_by(
+                    course_id=course.id,
+                    kind="study_session",
+                    notes=notes,
+                    minutes=minutes,
+                )
+                .one_or_none()
+            )
+            if already is not None:
+                continue
             record_study_session(session, minutes=minutes, notes=notes, course=course, when=when)
             count += 1
     return count
@@ -280,6 +288,6 @@ def ingest_fixtures(settings: Settings | None = None) -> dict[str, int]:
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_bytes(source.read_bytes())
             upsert_document(session, course, dest, filename, doc_type="syllabus")
-            counts["documents"] += 1
-    counts["habits"] = seed_habits(settings)
-    return counts
+    seed_habits(settings)
+    with session_scope(settings) as session:
+        return snapshot_counts(session)

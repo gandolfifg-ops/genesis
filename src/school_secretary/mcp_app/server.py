@@ -5,6 +5,7 @@ import json
 from school_secretary.agents.memory import record_study_session
 from school_secretary.agents.orchestrator import (
     ask,
+    find_assignment,
     find_course,
     plan_and_format,
     professor_email_draft,
@@ -12,7 +13,7 @@ from school_secretary.agents.orchestrator import (
     scaffold_and_describe,
 )
 from school_secretary.config import Settings, get_settings
-from school_secretary.db.models import Announcement, Assignment, Course
+from school_secretary.db.models import Announcement, Assignment, Course, SubTask
 from school_secretary.db.session import session_scope
 
 MCP_PORT_DEFAULT = 43147
@@ -96,6 +97,42 @@ def build_mcp(settings: Settings | None = None):
         """Polite email draft with schedule context. You send it; this does not mail anyone."""
         with session_scope(settings) as session:
             return professor_email_draft(session, topic=topic, course_query=course or None)
+
+    @mcp.tool()
+    def list_habits() -> str:
+        """Study minutes logged in the last 7 days, from SQLite."""
+        from school_secretary.agents.memory import format_habit_summary, suggested_block
+
+        with session_scope(settings) as session:
+            return format_habit_summary(session) + "\n" + suggested_block(session)
+
+    @mcp.tool()
+    def list_subtasks(assignment: str = "") -> str:
+        """Pending planner micro-deadlines, optionally filtered by assignment title."""
+        with session_scope(settings) as session:
+            query = session.query(SubTask).filter_by(status="pending").order_by(SubTask.due_at.asc())
+            if assignment.strip():
+                found = find_assignment(session, assignment)
+                if found is None:
+                    return f"No assignment matched {assignment!r}."
+                query = query.filter_by(assignment_id=found.id)
+            rows = query.limit(20).all()
+            if not rows:
+                return "No pending sub-tasks. Run get_plan first."
+            lines = []
+            for task in rows:
+                due = task.due_at.isoformat() if task.due_at else "unscheduled"
+                code = task.assignment.course.code if task.assignment else ""
+                lines.append(f"{task.sort_order + 1}. {code}: {task.title} ({due})")
+            return "\n".join(lines)
+
+    @mcp.tool()
+    def db_status() -> str:
+        """Row counts from the local SQLite database (courses, assignments, habits, calendar)."""
+        from school_secretary.ingest.brightspace import snapshot_counts
+
+        with session_scope(settings) as session:
+            return json.dumps(snapshot_counts(session))
 
     @mcp.tool()
     def sync_deadlines() -> str:

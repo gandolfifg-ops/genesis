@@ -8,7 +8,15 @@ from typing import Any
 import httpx
 
 from school_secretary.config import Settings, get_settings
-from school_secretary.db.models import Announcement, Assignment, Course, Document
+from school_secretary.db.models import (
+    Announcement,
+    Assignment,
+    CalendarEvent,
+    Course,
+    Document,
+    StudyHabitEvent,
+    SubTask,
+)
 from school_secretary.db.session import session_scope
 from school_secretary.ingest.browser import cookies_from_session
 from school_secretary.ingest.parser import (
@@ -25,6 +33,18 @@ LP = "1.47"
 
 class IngestError(RuntimeError):
     pass
+
+
+def snapshot_counts(session) -> dict[str, int]:
+    return {
+        "courses": session.query(Course).count(),
+        "announcements": session.query(Announcement).count(),
+        "assignments": session.query(Assignment).count(),
+        "documents": session.query(Document).count(),
+        "subtasks": session.query(SubTask).count(),
+        "habits": session.query(StudyHabitEvent).count(),
+        "calendar_events": session.query(CalendarEvent).count(),
+    }
 
 
 def _raw_course_dir(settings: Settings, org_unit_id: str) -> Path:
@@ -133,7 +153,6 @@ def ingest_payloads(
 ) -> dict[str, int]:
     """Parse Brightspace-shaped JSON into SQLite. Safe to run repeatedly."""
     attachment_files = attachment_files or {}
-    counts = {"courses": 0, "announcements": 0, "assignments": 0, "documents": 0}
     with session_scope(settings) as session:
         for raw_enrollment in enrollments:
             parsed_course = parse_enrollment_item(raw_enrollment)
@@ -143,26 +162,22 @@ def ingest_payloads(
             raw_dir = _raw_course_dir(settings, org_id)
             write_raw_json(raw_dir / "enrollment.json", raw_enrollment)
             course = upsert_course(session, parsed_course, term=term)
-            counts["courses"] += 1
 
             news_items = news_by_org.get(org_id, [])
             news_path = write_raw_json(raw_dir / "news.json", news_items)
             for item in news_items:
                 parsed = parse_news_item(item)
                 upsert_announcement(session, course, parsed, str(news_path))
-                counts["announcements"] += 1
                 for attachment in parsed["attachments"]:
                     dest = _resolve_attachment(attachment, attachment_files, raw_dir)
                     if dest:
                         upsert_document(session, course, dest, dest.name)
-                        counts["documents"] += 1
 
             dropbox_items = dropbox_by_org.get(org_id, [])
             dropbox_path = write_raw_json(raw_dir / "dropbox.json", dropbox_items)
             for item in dropbox_items:
                 parsed = parse_dropbox_item(item)
                 assignment = upsert_assignment(session, course, parsed, str(dropbox_path))
-                counts["assignments"] += 1
                 for attachment in parsed["attachments"]:
                     dest = _resolve_attachment(attachment, attachment_files, raw_dir)
                     if dest:
@@ -173,8 +188,9 @@ def ingest_payloads(
                             dest.name,
                             assignment=assignment,
                         )
-                        counts["documents"] += 1
-    return counts
+
+        session.flush()
+        return snapshot_counts(session)
 
 
 def _resolve_attachment(
