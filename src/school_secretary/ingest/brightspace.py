@@ -277,6 +277,16 @@ def _looks_like_html_bytes(content_type: str, payload: bytes) -> bool:
     return "html" in ctype or head.startswith(b"<!doctype") or head.startswith(b"<html")
 
 
+async def _wait_for_d2l_csrf_cookie(context, page) -> None:
+    """Wait until the session CSRF cookie exists. Never logs names or values."""
+    for _ in range(40):
+        cookies = await context.cookies()
+        if any(cookie.get("name") == "d2lSessionVal" for cookie in cookies):
+            return
+        await page.wait_for_timeout(250)
+    raise IngestError(f"{SESSION_EXPIRED} (CSRF cookie missing after onQ home)")
+
+
 class PlaywrightLEClient:
     """Brightspace LP/LE calls through Chromium's request context (cookies, UA, CSRF)."""
 
@@ -399,14 +409,17 @@ async def _ingest_live_async(settings: Settings) -> dict[str, int]:
         page = context.pages[0] if context.pages else await context.new_page()
         home = settings.onq_base_url.rstrip("/") + "/d2l/home"
         try:
-            await page.goto(home, wait_until="domcontentloaded", timeout=45_000)
+            await page.goto(home, wait_until="networkidle", timeout=90_000)
         except Exception as exc:
-            raise IngestError(
-                f"{SESSION_EXPIRED} (headless could not open onQ home)"
-            ) from exc
+            landed = (page.url or "").lower()
+            if "/d2l/home" not in landed:
+                raise IngestError(
+                    f"{SESSION_EXPIRED} (headless could not open onQ home)"
+                ) from exc
         landed = (page.url or "").lower()
         if any(part in landed for part in ("login", "adfs", "microsoftonline")):
             raise IngestError(f"{SESSION_EXPIRED} (headless landed on a login page)")
+        await _wait_for_d2l_csrf_cookie(context, page)
 
         client = PlaywrightLEClient(context, settings.onq_base_url)
         enrollments = await client.my_enrollments()

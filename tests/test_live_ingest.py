@@ -75,6 +75,18 @@ def test_live_ingest_source_does_not_use_httpx():
     assert "context.request.get" in text
 
 
+def test_live_ingest_opens_onq_home_networkidle_before_apis():
+    from pathlib import Path
+
+    text = Path("src/school_secretary/ingest/brightspace.py").read_text(encoding="utf-8")
+    home_idx = text.find('wait_until="networkidle"')
+    api_idx = text.find("await client.my_enrollments()")
+    assert "/d2l/home" in text
+    assert home_idx != -1
+    assert api_idx != -1
+    assert home_idx < api_idx
+
+
 def test_ingest_live_requires_storage_state(tmp_path, monkeypatch):
     monkeypatch.setenv("SCHOOL_SECRETARY_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("SCHOOL_SECRETARY_SESSION_PATH", str(tmp_path / "storage_state.json"))

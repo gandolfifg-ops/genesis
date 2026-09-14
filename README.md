@@ -207,7 +207,7 @@ uv run school-secretary ingest --live
 This does **not** open a window and should **not** prompt Duo again. It:
 
 1. Starts **headless Chromium** with the same persistent profile and `storage_state.json` (same cookies, user-agent, and CSRF as login)
-2. Opens onQ home, then calls Brightspace LP/LE APIs **through that browser context** (not a standalone HTTP client):
+2. Opens `{ONQ_BASE_URL}/d2l/home` with `wait_until="networkidle"` so `d2lSessionVal` is set, then calls Brightspace LP/LE APIs **through that browser context** (not a standalone HTTP client):
    - `/d2l/api/lp/1.47/enrollments/myenrollments/`
    - `/d2l/api/le/1.47/{orgUnitId}/news/`
    - `/d2l/api/le/1.47/{orgUnitId}/dropbox/folders/`
