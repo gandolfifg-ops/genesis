@@ -133,7 +133,7 @@ def suggested_block(session: Session, now: datetime | None = None) -> str:
     if "No upcoming" in focus or "Nothing upcoming" in focus:
         return "Suggested block: 25 min reading, then log it with /study."
     # Pull minutes out of the focus line if present.
-    neglected = "0 min logged" in focus
+    neglected = ", 0 min logged" in focus
     length = 90 if neglected else 45
     last = last_study_event(session)
     last_bit = ""

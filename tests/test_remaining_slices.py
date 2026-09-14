@@ -233,3 +233,32 @@ def test_help_and_habits_routes(tmp_path, monkeypatch):
     assert "This week:" in habits or "No study sessions" in habits
     assert "Streak:" in habits
 
+
+def test_suggested_block_does_not_treat_sixty_as_zero(tmp_path, monkeypatch):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from school_secretary.agents.memory import record_study_session, suggested_block
+
+    settings = _iso(tmp_path, monkeypatch)
+    init_db(settings)
+    tz = ZoneInfo("America/Toronto")
+    now = datetime(2026, 9, 14, 12, 0, tzinfo=tz)
+    with session_scope(settings) as session:
+        course = Course(org_unit_id="365", code="CISC 365", name="Algo", term="F26")
+        session.add(course)
+        session.flush()
+        session.add(
+            Assignment(
+                course_id=course.id,
+                d2l_id="a1",
+                title="Assignment 1",
+                due_at=datetime(2026, 9, 28, 23, 59, tzinfo=tz),
+                assignment_type="coding_lab",
+            )
+        )
+        record_study_session(session, minutes=60, notes="dp", course=course, when=now)
+        block = suggested_block(session, now)
+    assert "45 min" in block
+    assert "90 min" not in block
+

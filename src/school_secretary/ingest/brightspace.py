@@ -121,11 +121,15 @@ def upsert_document(
     if not path.exists():
         return None
     digest = file_hash(path)
-    row = (
+    rows = (
         session.query(Document)
         .filter_by(course_id=course.id, filename=filename)
-        .one_or_none()
+        .order_by(Document.id.asc())
+        .all()
     )
+    row = rows[0] if rows else None
+    for duplicate in rows[1:]:
+        session.delete(duplicate)
     text = extract_pdf_text(path) if path.suffix.lower() == ".pdf" else path.read_text(encoding="utf-8", errors="ignore")
     kind = doc_type or classify_document(filename, text)
     if row is None:
