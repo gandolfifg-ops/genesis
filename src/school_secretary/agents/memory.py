@@ -34,6 +34,27 @@ def record_study_session(
     return event
 
 
+def course_minutes(
+    session: Session,
+    course_id: int | None,
+    *,
+    days: int = 7,
+    now: datetime | None = None,
+) -> int:
+    now = now or datetime.now(tz=_tz())
+    start = now - timedelta(days=days)
+    query = (
+        select(func.coalesce(func.sum(StudyHabitEvent.minutes), 0))
+        .where(StudyHabitEvent.occurred_at >= start)
+        .where(StudyHabitEvent.kind == "study_session")
+    )
+    if course_id is None:
+        query = query.where(StudyHabitEvent.course_id.is_(None))
+    else:
+        query = query.where(StudyHabitEvent.course_id == course_id)
+    return int(session.execute(query).scalar_one() or 0)
+
+
 def weekly_minutes_by_course(session: Session, now: datetime | None = None) -> list[tuple[Course | None, int]]:
     now = now or datetime.now(tz=_tz())
     start = now - timedelta(days=7)
@@ -45,6 +66,32 @@ def weekly_minutes_by_course(session: Session, now: datetime | None = None) -> l
     ).all()
     courses = {course.id: course for course in session.query(Course).all()}
     return [(courses.get(course_id), int(minutes)) for course_id, minutes in rows]
+
+
+def last_study_event(session: Session, course_id: int | None = None) -> StudyHabitEvent | None:
+    query = session.query(StudyHabitEvent).filter_by(kind="study_session")
+    if course_id is not None:
+        query = query.filter_by(course_id=course_id)
+    return query.order_by(StudyHabitEvent.occurred_at.desc()).first()
+
+
+def study_streak_days(session: Session, now: datetime | None = None) -> int:
+    now = now or datetime.now(tz=_tz())
+    dates = set()
+    for (occurred,) in session.query(StudyHabitEvent.occurred_at).filter_by(kind="study_session"):
+        local = occurred.astimezone(_tz()) if occurred.tzinfo else occurred.replace(tzinfo=_tz())
+        dates.add(local.date())
+    streak = 0
+    cursor = now.date()
+    while cursor in dates:
+        streak += 1
+        cursor = cursor - timedelta(days=1)
+    if streak == 0:
+        cursor = now.date() - timedelta(days=1)
+        while cursor in dates:
+            streak += 1
+            cursor = cursor - timedelta(days=1)
+    return streak
 
 
 def suggest_focus(session: Session, now: datetime | None = None) -> str:
@@ -80,12 +127,48 @@ def suggest_focus(session: Session, now: datetime | None = None) -> str:
     )
 
 
+def suggested_block(session: Session, now: datetime | None = None) -> str:
+    now = now or datetime.now(tz=_tz())
+    focus = suggest_focus(session, now)
+    if "No upcoming" in focus or "Nothing upcoming" in focus:
+        return "Suggested block: 25 min reading, then log it with /study."
+    # Pull minutes out of the focus line if present.
+    neglected = "0 min logged" in focus
+    length = 90 if neglected else 45
+    last = last_study_event(session)
+    last_bit = ""
+    if last and last.occurred_at:
+        when = last.occurred_at
+        last_bit = f" Last session: {when.strftime('%a %H:%M')} ({last.minutes} min)."
+    streak = study_streak_days(session, now)
+    return f"Suggested block: {length} min. Streak: {streak} day(s).{last_bit}"
+
+
 def format_habit_summary(session: Session, now: datetime | None = None) -> str:
+    now = now or datetime.now(tz=_tz())
     rows = weekly_minutes_by_course(session, now)
+    streak = study_streak_days(session, now)
     if not rows:
-        return "No study sessions logged this week. Use `school-secretary study --course 'CISC 235' --minutes 45`."
+        return (
+            "No study sessions logged this week. "
+            "Use `school-secretary study --course 'CISC 235' --minutes 45` "
+            f"(streak: {streak} day(s))."
+        )
     parts = []
     for course, minutes in sorted(rows, key=lambda row: row[1], reverse=True):
         label = course.code if course else "unspecified"
         parts.append(f"{label}: {minutes} min")
-    return "This week: " + "; ".join(parts)
+    last = last_study_event(session)
+    last_bit = ""
+    if last and last.occurred_at:
+        last_bit = f" Last log: {last.occurred_at.strftime('%a %d %b %H:%M')}."
+    return f"This week: {'; '.join(parts)}. Streak: {streak} day(s).{last_bit}"
+
+
+def habit_note_for_course(session: Session, course_id: int, now: datetime | None = None) -> str:
+    minutes = course_minutes(session, course_id, days=7, now=now)
+    if minutes <= 0:
+        return "No minutes logged on this course this week — front-loaded the early steps."
+    if minutes >= 90:
+        return f"{minutes} min logged this week — extra buffer on later steps."
+    return f"{minutes} min logged on this course this week."

@@ -105,3 +105,20 @@ class StudyHabitEvent(Base):
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
     course: Mapped[Course | None] = relationship(back_populates="habit_events")
+
+
+class CalendarEvent(Base):
+    __tablename__ = "calendar_events"
+    __table_args__ = (UniqueConstraint("source_kind", "source_id", name="uq_cal_source"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source_kind: Mapped[str] = mapped_column(String(32))  # assignment | subtask
+    source_id: Mapped[int] = mapped_column(Integer, index=True)
+    uid: Mapped[str] = mapped_column(String(255), unique=True)
+    title: Mapped[str] = mapped_column(String(512))
+    start_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    end_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    transport: Mapped[str] = mapped_column(String(32), default="ics")  # ics | google
+    google_event_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

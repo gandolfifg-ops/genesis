@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy.orm import Session
 
 from school_secretary.agents.drafting import describe_scaffold, scaffold_assignment
-from school_secretary.agents.memory import format_habit_summary, suggest_focus
+from school_secretary.agents.memory import format_habit_summary, suggest_focus, suggested_block
 from school_secretary.agents.planner import format_plan, plan_unplanned
 from school_secretary.agents.triage import triage_pending
 from school_secretary.config import Settings, get_settings
@@ -22,7 +22,15 @@ def run_agents(settings: Settings | None = None) -> dict[str, int]:
         triaged = triage_pending(session)
         planned = plan_unplanned(session)
     indexed = index_documents(settings)
-    return {"triaged": len(triaged), "planned": len(planned), "indexed": indexed}
+    from school_secretary.calendar_sync import sync_calendar
+
+    calendar = sync_calendar(settings)
+    return {
+        "triaged": len(triaged),
+        "planned": len(planned),
+        "indexed": indexed,
+        "calendar_events": int(calendar["events"]),
+    }
 
 
 def find_course(session: Session, query: str) -> Course | None:
@@ -113,6 +121,7 @@ def render_briefing(kind: str, settings: Settings | None = None, now: datetime |
             "",
             format_habit_summary(session, now),
             suggest_focus(session, now),
+            suggested_block(session, now),
             "",
             "Announcements:",
         ]

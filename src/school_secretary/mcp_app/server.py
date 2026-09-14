@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from school_secretary.agents.memory import record_study_session
 from school_secretary.agents.orchestrator import (
     ask,
@@ -94,6 +96,14 @@ def build_mcp(settings: Settings | None = None):
         """Polite email draft with schedule context. You send it; this does not mail anyone."""
         with session_scope(settings) as session:
             return professor_email_draft(session, topic=topic, course_query=course or None)
+
+    @mcp.tool()
+    def sync_deadlines() -> str:
+        """Push assignment and sub-task deadlines to Google Calendar, or a local ICS file."""
+        from school_secretary.calendar_sync import sync_calendar
+
+        result = sync_calendar(settings)
+        return json.dumps(result)
 
     return mcp
 

@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from school_secretary.config import get_settings
 from school_secretary.db.models import Assignment, SubTask
+from school_secretary.agents.memory import course_minutes, habit_note_for_course
 
 STEP_TEMPLATES: dict[str, list[str]] = {
     "coding_lab": [
@@ -51,11 +52,14 @@ def plan_assignment(session: Session, assignment: Assignment, now: datetime | No
     now = now or datetime.now(tz=_tz())
     due = _as_local(assignment.due_at) or now + timedelta(days=14)
     steps = STEP_TEMPLATES.get(assignment.assignment_type, STEP_TEMPLATES["other"])
+    studied = course_minutes(session, assignment.course_id, days=7, now=now)
+    # Real habit data, not seed-only: no minutes → front-load; lots of minutes → extra buffer.
+    extra = 1.5 if studied <= 0 else (0.2 if studied >= 90 else 0.5)
     span = max((due - now).total_seconds(), 3600)
     session.query(SubTask).filter_by(assignment_id=assignment.id).delete()
     created: list[SubTask] = []
     for index, title in enumerate(steps):
-        fraction = (index + 1) / (len(steps) + 0.5)
+        fraction = (index + 1) / (len(steps) + extra)
         micro_due = now + timedelta(seconds=span * fraction)
         if micro_due > due - timedelta(hours=4) and index < len(steps) - 1:
             micro_due = due - timedelta(hours=12 * (len(steps) - index))
@@ -81,6 +85,8 @@ def plan_unplanned(session: Session, now: datetime | None = None) -> list[Assign
 
 
 def format_plan(assignment: Assignment) -> str:
+    from sqlalchemy.orm import object_session
+
     tz = _tz()
     lines = [
         f"Plan for {assignment.course.code} — {assignment.title}",
@@ -88,6 +94,10 @@ def format_plan(assignment: Assignment) -> str:
         "Academic integrity: this is a work plan only. You write the actual work.",
         "",
     ]
+    sess = object_session(assignment)
+    if sess is not None:
+        lines.append(habit_note_for_course(sess, assignment.course_id))
+        lines.append("")
     for task in assignment.subtasks:
         due = _as_local(task.due_at)
         due_s = due.astimezone(tz).strftime("%a %b %d %H:%M") if due else "unscheduled"

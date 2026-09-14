@@ -39,6 +39,7 @@ uv run school-secretary scaffold "Essay 1"
 uv run school-secretary briefing morning
 uv run school-secretary briefing evening
 uv run school-secretary study --course "CISC 235" --minutes 45 --notes "BST traces"
+uv run school-secretary calendar-sync
 uv run school-secretary email --topic "clarification on Lab 2 test cases" --course "CISC 235"
 uv run pytest
 ```
@@ -63,6 +64,14 @@ Variable names (exact):
 | `OPENAI_MODEL` | optional, default `gpt-4o-mini` | OpenAI model id |
 | `ONQ_BASE_URL` | optional, default `https://onq.queensu.ca` | live ingest |
 | `MCP_HOST` / `MCP_PORT` | optional, default `127.0.0.1` / `43147` | MCP HTTP bind |
+| `GOOGLE_CALENDAR_ID` | optional, default `primary` | Calendar API calendar id |
+| `GOOGLE_OAUTH_CLIENT_ID` | optional | Calendar OAuth client |
+| `GOOGLE_OAUTH_CLIENT_SECRET` | optional | Calendar OAuth secret |
+| `GOOGLE_OAUTH_REFRESH_TOKEN` | optional | Calendar refresh token; if empty, sync writes a local ICS |
+| `WHATSAPP_TOKEN` | optional | Meta Cloud API token |
+| `WHATSAPP_PHONE_NUMBER_ID` | optional | Meta Cloud phone number id |
+| `WHATSAPP_VERIFY_TOKEN` | optional | webhook verify token |
+| `WHATSAPP_WEBHOOK_HOST` / `WHATSAPP_WEBHOOK_PORT` | optional, default `127.0.0.1` / `43148` | WhatsApp webhook bind |
 
 If OpenAI is unset, agents use extractive RAG + templates. If Telegram is unset, `telegram` exits with the setup text below; everything else still runs.
 
@@ -125,18 +134,30 @@ Commands: `/start` `/ask` `/briefing` `/evening` `/plan` `/scaffold` `/email` `/
 
 ---
 
-## 2. Playwright Queen’s SSO (one-time manual login)
+## 2. Playwright Queen’s SSO (Windows WSL)
 
 Live onQ ingest is **optional**. The fixture demo never opens a browser.
 
-**Install Chromium once** (Playwright’s browser, not your system Chrome):
+Do this in **Ubuntu WSL**, not PowerShell. Clone `francescog11/genesis`, then from the repo root:
 
 ```bash
+cd ~/genesis   # or wherever you cloned francescog11/genesis
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source "$HOME/.local/bin/env"
 uv sync
 uv run playwright install chromium
+echo "$DISPLAY"    # Windows 11 WSLg should print something like :0
+uv run school-secretary login
 ```
 
-**Exact one-time login command** (run on a machine with a display — your laptop, not a headless server):
+If `echo $DISPLAY` is empty:
+
+```bash
+export DISPLAY=:0
+uv run school-secretary login
+```
+
+**Exact one-time login command**
 
 ```bash
 uv run school-secretary login
@@ -144,10 +165,10 @@ uv run school-secretary login
 
 **What you should see**
 
-1. A **real Chromium** window opens (Playwright persistent profile, 1280×900).
+1. A **real Chromium** window opens on your Windows desktop (Playwright persistent profile, 1280×900).
 2. It goes to the Queen’s onQ login at **`https://onq.queensu.ca/d2l/home`**.
 3. Type your **NetID** and **password**, then approve **Duo MFA**.
-4. When you reach the **onQ homepage** (course tiles / Brightspace navbar), leave the window open, switch back to the terminal, and **press Enter**.
+4. When you reach the **onQ homepage** (course tiles / Brightspace navbar), leave the window open, switch back to the **WSL terminal**, and **press Enter**.
 
 **Where cookies are saved**
 
@@ -182,7 +203,38 @@ If `storage_state.json` is missing:
 Missing .../storage_state.json. Run `uv run school-secretary login` first (NetID, password, Duo).
 ```
 
-SSO session capture on a personal machine is the intended path; this repo only stores cookies locally.
+SSO session capture on your WSL machine is the intended path; this repo only stores cookies locally.
+
+---
+
+## Google Calendar
+
+```bash
+uv run school-secretary calendar-sync
+```
+
+Without `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, and `GOOGLE_OAUTH_REFRESH_TOKEN`, this writes `data/calendar/school-secretary.ics` (assignment + sub-task deadlines). Import that file into Google Calendar, or fill the three OAuth keys to push via the Calendar API.
+
+---
+
+## WhatsApp (Telegram stays primary)
+
+Same commands as Telegram: `/start` `/ask` `/briefing` `/evening` `/plan` `/scaffold` `/email` `/study`.
+
+```bash
+uv run school-secretary whatsapp
+```
+
+No Meta credentials: mock webhook on **http://127.0.0.1:43148**.
+
+```bash
+curl -sS http://127.0.0.1:43148/health
+curl -sS -X POST http://127.0.0.1:43148/mock/message \
+  -H 'content-type: application/json' \
+  -d '{"text":"/briefing"}'
+```
+
+With Cloud API keys, point Meta’s webhook at `/webhook` on `WHATSAPP_WEBHOOK_PORT` (default 43148).
 
 ---
 
@@ -213,7 +265,7 @@ Example `mcp.json` snippet:
 }
 ```
 
-Tools: `list_courses`, `list_assignments`, `list_announcements`, `query_syllabus`, `get_plan`, `scaffold_assignment`, `get_briefing`, `record_study`, `draft_professor_email`.
+Tools: `list_courses`, `list_assignments`, `list_announcements`, `query_syllabus`, `get_plan`, `scaffold_assignment`, `get_briefing`, `record_study`, `draft_professor_email`, `sync_deadlines`.
 
 ## Layout
 
@@ -225,8 +277,11 @@ src/school_secretary/
   agents/     triage, planner, drafting, study-habit memory, orchestrator
   mcp_app/    FastMCP server
   telegram_app/
+  whatsapp_app/
+  calendar_sync.py
 data/fixtures/pdfs/   generated on ingest
 data/raw/             gitignored raw JSON + PDFs
+data/calendar/        gitignored ICS mock calendar
 storage_state.json    gitignored Playwright cookies (session.json is a copy)
 ```
 

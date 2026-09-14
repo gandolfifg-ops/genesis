@@ -43,6 +43,10 @@ def demo() -> None:
     print(scaffold_and_describe("Binary Search", settings=settings))
     print("\n== 6. Morning briefing ==")
     print(render_briefing("morning", settings=settings, now=DEMO_NOW))
+    print("\n== 7. Calendar push (ICS mock unless Google OAuth is set) ==")
+    from school_secretary.calendar_sync import sync_calendar
+
+    print(sync_calendar(settings))
     print("\nDemo complete. Next: `uv run school-secretary mcp` or see README for Telegram / onQ login.")
 
 
@@ -153,6 +157,22 @@ def telegram() -> None:
     from school_secretary.telegram_app.bot import run_bot
 
     run_bot(get_settings())
+
+
+@app.command()
+def whatsapp() -> None:
+    """WhatsApp Cloud webhook, or a local mock on port 43148 if credentials are missing."""
+    from school_secretary.whatsapp_app.server import run_whatsapp
+
+    run_whatsapp(get_settings())
+
+
+@app.command("calendar-sync")
+def calendar_sync_cmd() -> None:
+    """Push assignment/sub-task deadlines to Google Calendar, or write a local ICS file."""
+    from school_secretary.calendar_sync import sync_calendar
+
+    print(sync_calendar(get_settings()))
 
 
 @app.command("index-docs")

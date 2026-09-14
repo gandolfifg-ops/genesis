@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -11,6 +12,8 @@ ONQ_HOME = "/d2l/home"
 LOGIN_WAIT_MESSAGE = """
 A real Chromium window should now be open on the Queen's onQ login page
 (https://onq.queensu.ca/d2l/home).
+
+Run this on YOUR machine (Windows WSL), not a remote cloud desktop:
 
 1. Type your Queen's NetID and password.
 2. Approve Duo MFA when prompted.
@@ -22,6 +25,18 @@ Playwright storage state is saved to {storage_state_path}
 The persistent profile stays in {profile_dir}. Headless ingest uses those
 cookies afterward so Duo is not prompted on every refresh.
 """.strip()
+
+
+def _print_wsl_display_hint() -> None:
+    proc = Path("/proc/version")
+    is_wsl = proc.exists() and "microsoft" in proc.read_text(encoding="utf-8", errors="ignore").lower()
+    display = os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+    if is_wsl and not display:
+        print("WSL: DISPLAY is unset, so Chromium may not appear.")
+        print("On Windows 11, WSLg usually provides a display. In this same Ubuntu terminal:")
+        print("  echo $DISPLAY")
+        print("  export DISPLAY=:0")
+        print("Then re-run: uv run school-secretary login")
 
 
 def cookies_from_session(path: Path) -> dict[str, str]:
@@ -43,6 +58,7 @@ async def _login_async(settings: Settings) -> Path:
     settings.browser_profile_dir.mkdir(parents=True, exist_ok=True)
     dest = settings.storage_state_path
     url = settings.onq_base_url.rstrip("/") + ONQ_HOME
+    _print_wsl_display_hint()
     async with async_playwright() as playwright:
         context = await playwright.chromium.launch_persistent_context(
             user_data_dir=str(settings.browser_profile_dir),

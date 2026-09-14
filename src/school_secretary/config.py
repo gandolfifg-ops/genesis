@@ -33,6 +33,15 @@ class Settings(BaseSettings):
     onq_base_url: str = "https://onq.queensu.ca"
     mcp_host: str = "127.0.0.1"
     mcp_port: int = 43147
+    google_calendar_id: str = "primary"
+    google_oauth_client_id: str = ""
+    google_oauth_client_secret: str = ""
+    google_oauth_refresh_token: str = ""
+    whatsapp_token: str = ""
+    whatsapp_phone_number_id: str = ""
+    whatsapp_verify_token: str = ""
+    whatsapp_webhook_host: str = "127.0.0.1"
+    whatsapp_webhook_port: int = 43148
     school_secretary_data_dir: Path = ROOT / "data"
     school_secretary_session_path: Path = ROOT / "storage_state.json"
     timezone: str = "America/Toronto"
@@ -88,6 +97,14 @@ class Settings(BaseSettings):
     def telegram_chat_id_path(self) -> Path:
         return self.data_dir / "telegram_chat_id.txt"
 
+    @property
+    def calendar_dir(self) -> Path:
+        return self.data_dir / "calendar"
+
+    @property
+    def whatsapp_outbox_path(self) -> Path:
+        return self.data_dir / "whatsapp_outbox.jsonl"
+
     def ensure_dirs(self) -> None:
         for path in (
             self.data_dir,
@@ -95,6 +112,7 @@ class Settings(BaseSettings):
             self.chroma_path,
             self.browser_profile_dir,
             self.scaffolds_dir,
+            self.calendar_dir,
         ):
             path.mkdir(parents=True, exist_ok=True)
 
