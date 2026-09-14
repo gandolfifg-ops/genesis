@@ -15,6 +15,7 @@ from school_secretary.agents.memory import (
 from school_secretary.agents.planner import format_plan, plan_unplanned
 from school_secretary.agents.triage import triage_pending
 from school_secretary.config import Settings, get_settings
+from school_secretary.db.live import live_course_ids
 from school_secretary.db.models import Announcement, Assignment, Course, SubTask
 from school_secretary.db.session import session_scope
 from school_secretary.rag.index import index_documents
@@ -50,10 +51,16 @@ def find_course(session: Session, query: str) -> Course | None:
 
 def find_assignment(session: Session, query: str) -> Assignment | None:
     q = query.strip()
+    live_ids = live_course_ids(session)
     if q.isdigit():
-        return session.get(Assignment, int(q))
-    row = session.query(Assignment).filter(Assignment.title.ilike(f"%{q}%")).first()
-    return row
+        row = session.get(Assignment, int(q))
+        return row
+    matches = session.query(Assignment).filter(Assignment.title.ilike(f"%{q}%")).all()
+    if live_ids:
+        live_matches = [row for row in matches if row.course_id in live_ids]
+        if live_matches:
+            return live_matches[0]
+    return matches[0] if matches else None
 
 
 def professor_email_draft(
@@ -88,18 +95,16 @@ def render_briefing(kind: str, settings: Settings | None = None, now: datetime |
     now = now or datetime.now(tz=tz)
     window = timedelta(hours=36) if kind == "morning" else timedelta(hours=18)
     with session_scope(settings) as session:
-        announcements = (
-            session.query(Announcement)
-            .order_by(Announcement.posted_at.desc())
-            .limit(8)
-            .all()
+        live_ids = live_course_ids(session)
+        announcements = session.query(Announcement).order_by(Announcement.posted_at.desc())
+        assignments = session.query(Assignment).filter(Assignment.due_at.is_not(None)).order_by(
+            Assignment.due_at.asc()
         )
-        assignments = (
-            session.query(Assignment)
-            .filter(Assignment.due_at.is_not(None))
-            .order_by(Assignment.due_at.asc())
-            .all()
-        )
+        if live_ids:
+            announcements = announcements.filter(Announcement.course_id.in_(live_ids))
+            assignments = assignments.filter(Assignment.course_id.in_(live_ids))
+        announcements = announcements.limit(8).all()
+        assignments = assignments.all()
         due_soon = []
         for row in assignments:
             due = row.due_at
@@ -145,14 +150,15 @@ def render_briefing(kind: str, settings: Settings | None = None, now: datetime |
                 lines.append(f"  - {row.course.code}: {row.title} ({due_s})")
         else:
             lines.append("  (nothing in the next 21 days)")
-        pending_steps = (
+        pending_q = (
             session.query(SubTask)
             .filter(SubTask.status == "pending")
             .filter(SubTask.due_at.is_not(None))
             .order_by(SubTask.due_at.asc())
-            .limit(5)
-            .all()
         )
+        if live_ids:
+            pending_q = pending_q.join(Assignment).filter(Assignment.course_id.in_(live_ids))
+        pending_steps = pending_q.limit(5).all()
         lines.append("")
         if kind == "evening":
             lines.append("Open micro-deadlines:")

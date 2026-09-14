@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
 from school_secretary.config import Settings, get_settings
@@ -24,7 +24,20 @@ def get_engine(settings: Settings | None = None):
     settings = settings or get_settings()
     url = _url(settings)
     if _engine is None or _engine_url != url:
-        _engine = create_engine(url, echo=False, future=True)
+        _engine = create_engine(
+            url,
+            echo=False,
+            future=True,
+            connect_args={"timeout": 30, "check_same_thread": False},
+        )
+
+        @event.listens_for(_engine, "connect")
+        def _sqlite_pragmas(dbapi_connection, _connection_record) -> None:  # noqa: ANN001
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA busy_timeout=5000")
+            cursor.close()
+
         _SessionLocal = sessionmaker(_engine, expire_on_commit=False, future=True)
         _engine_url = url
     return _engine

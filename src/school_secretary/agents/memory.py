@@ -7,6 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from school_secretary.config import get_settings
+from school_secretary.db.live import live_course_ids
 from school_secretary.db.models import Assignment, Course, StudyHabitEvent
 
 
@@ -102,6 +103,9 @@ def suggest_focus(session: Session, now: datetime | None = None) -> str:
         .order_by(Assignment.due_at.asc())
         .all()
     )
+    live_ids = live_course_ids(session)
+    if live_ids:
+        upcoming = [row for row in upcoming if row.course_id in live_ids]
     minutes = {course.id if course else None: total for course, total in weekly_minutes_by_course(session, now)}
     if not upcoming:
         return "No upcoming assignments in the database. Log a study session after you pick a course."

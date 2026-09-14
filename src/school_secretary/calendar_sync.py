@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from school_secretary.config import Settings, get_settings
+from school_secretary.db.live import live_course_ids
 from school_secretary.db.models import Assignment, CalendarEvent, SubTask
 from school_secretary.db.session import init_db, session_scope
 
@@ -161,7 +162,13 @@ def sync_calendar(settings: Settings | None = None) -> dict[str, str | int]:
     now = datetime.now(tz=_tz(settings))
     with session_scope(settings) as session:
         events: list[CalendarEvent] = []
-        for assignment in session.query(Assignment).filter(Assignment.due_at.is_not(None)).all():
+        live_ids = live_course_ids(session)
+        asg_q = session.query(Assignment).filter(Assignment.due_at.is_not(None))
+        task_q = session.query(SubTask).filter(SubTask.due_at.is_not(None))
+        if live_ids:
+            asg_q = asg_q.filter(Assignment.course_id.in_(live_ids))
+            task_q = task_q.join(Assignment).filter(Assignment.course_id.in_(live_ids))
+        for assignment in asg_q.all():
             title = f"{assignment.course.code}: {assignment.title}"
             events.append(
                 _upsert_event(
@@ -173,7 +180,7 @@ def sync_calendar(settings: Settings | None = None) -> dict[str, str | int]:
                     settings=settings,
                 )
             )
-        for task in session.query(SubTask).filter(SubTask.due_at.is_not(None)).all():
+        for task in task_q.all():
             parent = task.assignment
             title = f"{parent.course.code} step: {task.title}"
             events.append(

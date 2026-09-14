@@ -35,6 +35,25 @@ class IngestError(RuntimeError):
     pass
 
 
+SESSION_EXPIRED = (
+    "onQ session expired or not authorized. "
+    "Re-run `uv run school-secretary login` on WSL (NetID, password, Duo). "
+    "Headless ingest will not open a browser."
+)
+
+
+def _session_expired_error(status: int, content_type: str) -> IngestError:
+    ctype = (content_type or "").split(";")[0] or "unknown"
+    return IngestError(f"{SESSION_EXPIRED} (HTTP {status}, {ctype})")
+
+
+def attachment_api_path(kind: str, org_id: str, parent_id: str, file_id: str) -> str:
+    """Brightspace LE path for a news or dropbox attachment. No query secrets."""
+    if kind == "news":
+        return f"/d2l/api/le/{LE}/{org_id}/news/{parent_id}/attachments/{file_id}"
+    return f"/d2l/api/le/{LE}/{org_id}/dropbox/folders/{parent_id}/attachments/{file_id}"
+
+
 def snapshot_counts(session) -> dict[str, int]:
     return {
         "courses": session.query(Course).count(),
@@ -253,21 +272,58 @@ class BrightspaceClient:
         url = self.base + path
         with httpx.Client(cookies=self.cookies, follow_redirects=True, timeout=30.0) as client:
             response = client.get(url, headers={"Accept": "application/json"})
+            ctype = response.headers.get("content-type", "")
+            if response.status_code in {401, 403}:
+                raise _session_expired_error(response.status_code, ctype)
+            peek = (response.text or "")[:80].lstrip().lower()
+            if "html" in ctype.lower() or peek.startswith("<!") or peek.startswith("<html"):
+                raise _session_expired_error(response.status_code or 200, ctype or "text/html")
             response.raise_for_status()
-            return response.json()
+            try:
+                return response.json()
+            except json.JSONDecodeError as exc:
+                raise IngestError(
+                    f"{SESSION_EXPIRED} (response was not JSON)"
+                ) from exc
 
     def my_enrollments(self) -> list[dict[str, Any]]:
-        payload = self._get(f"/d2l/api/lp/{LP}/enrollments/myenrollments/")
-        if isinstance(payload, dict):
-            return payload.get("Items") or payload.get("items") or []
-        return payload
+        items: list[dict[str, Any]] = []
+        bookmark = ""
+        for _ in range(25):
+            path = f"/d2l/api/lp/{LP}/enrollments/myenrollments/?orgUnitTypeId=3"
+            if bookmark:
+                path += f"&bookmark={bookmark}"
+            payload = self._get(path)
+            if isinstance(payload, list):
+                items.extend(payload)
+                break
+            batch = payload.get("Items") or payload.get("items") or []
+            items.extend(batch)
+            paging = payload.get("PagingInfo") or payload.get("pagingInfo") or {}
+            more = paging.get("HasMoreItems")
+            if more is None:
+                more = paging.get("hasMoreItems")
+            bookmark = str(paging.get("Bookmark") or paging.get("bookmark") or "")
+            if not more or not bookmark:
+                break
+        return items
 
     def news(self, org_unit_id: str) -> list[dict[str, Any]]:
-        payload = self._get(f"/d2l/api/le/{LE}/{org_unit_id}/news/")
+        try:
+            payload = self._get(f"/d2l/api/le/{LE}/{org_unit_id}/news/")
+        except httpx.HTTPStatusError as exc:
+            if exc.response is not None and exc.response.status_code == 404:
+                return []
+            raise
         return payload if isinstance(payload, list) else payload.get("Items") or []
 
     def dropbox_folders(self, org_unit_id: str) -> list[dict[str, Any]]:
-        payload = self._get(f"/d2l/api/le/{LE}/{org_unit_id}/dropbox/folders/")
+        try:
+            payload = self._get(f"/d2l/api/le/{LE}/{org_unit_id}/dropbox/folders/")
+        except httpx.HTTPStatusError as exc:
+            if exc.response is not None and exc.response.status_code == 404:
+                return []
+            raise
         return payload if isinstance(payload, list) else payload.get("Items") or []
 
     def download_file(self, url: str, dest: Path) -> bool:
@@ -276,6 +332,10 @@ class BrightspaceClient:
         with httpx.Client(cookies=self.cookies, follow_redirects=True, timeout=60.0) as client:
             response = client.get(full)
             if response.status_code >= 400:
+                return False
+            ctype = (response.headers.get("content-type") or "").lower()
+            head = response.content[:64].lstrip().lower()
+            if "html" in ctype or head.startswith(b"<!doctype") or head.startswith(b"<html"):
                 return False
             dest.write_bytes(response.content)
             return True
@@ -295,23 +355,27 @@ def ingest_live(settings: Settings | None = None) -> dict[str, int]:
     attachment_files: dict[str, Path] = {}
 
     parsed_courses = [p for e in enrollments if (p := parse_enrollment_item(e))]
+    from school_secretary.ingest.parser import (
+        extract_attachments_from_html,
+        extract_attachments_from_json,
+        merge_attachments,
+    )
+
     for parsed in parsed_courses:
         org_id = parsed["org_unit_id"]
         news_by_org[org_id] = client.news(org_id)
         dropbox_by_org[org_id] = client.dropbox_folders(org_id)
         raw_dir = _raw_course_dir(settings, org_id)
-        for collection in (news_by_org[org_id], dropbox_by_org[org_id]):
+        for kind, collection in (
+            ("news", news_by_org[org_id]),
+            ("dropbox", dropbox_by_org[org_id]),
+        ):
             for item in collection:
-                from school_secretary.ingest.parser import (
-                    extract_attachments_from_html,
-                    extract_attachments_from_json,
-                    merge_attachments,
-                )
-
                 html = ""
                 body = item.get("Body") or item.get("Instructions") or {}
                 if isinstance(body, dict):
                     html = body.get("Html") or ""
+                parent_id = str(item.get("Id") or item.get("id") or "")
                 for attachment in merge_attachments(
                     extract_attachments_from_json(item),
                     extract_attachments_from_html(html),
@@ -319,6 +383,9 @@ def ingest_live(settings: Settings | None = None) -> dict[str, int]:
                     filename = attachment.get("filename") or f"{attachment.get('file_id')}.bin"
                     dest = raw_dir / filename
                     url = attachment.get("url") or ""
+                    file_id = attachment.get("file_id") or ""
+                    if not url and file_id and parent_id:
+                        url = attachment_api_path(kind, org_id, parent_id, file_id)
                     if url and client.download_file(url, dest):
                         attachment_files[filename] = dest
 
@@ -360,5 +427,11 @@ def ingest_live(settings: Settings | None = None) -> dict[str, int]:
             if playwright is not None:
                 await playwright.stop()
 
-    asyncio.run(_dom_fallback())
+    try:
+        asyncio.run(_dom_fallback())
+    except IngestError:
+        raise
+    except Exception:
+        # DOM scrape is a fallback; LE JSON ingest still proceeds.
+        pass
     return ingest_payloads(settings, enrollments, news_by_org, dropbox_by_org, attachment_files)

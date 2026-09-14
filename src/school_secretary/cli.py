@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from typing import Optional
 
 import typer
@@ -63,9 +64,13 @@ def ingest(
 
         print(ingest_fixtures(settings))
         return
-    from school_secretary.ingest.brightspace import ingest_live
+    from school_secretary.ingest.brightspace import ingest_live, IngestError
 
-    print(ingest_live(settings))
+    try:
+        print(ingest_live(settings))
+    except IngestError as exc:
+        print(str(exc), file=sys.stderr)
+        raise SystemExit(1)
 
 
 @app.command()
