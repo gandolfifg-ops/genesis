@@ -1,0 +1,222 @@
+from __future__ import annotations
+
+import json
+import re
+from pathlib import Path
+
+from school_secretary.agents.llm import complete
+from school_secretary.agents.memory import record_study_session
+from school_secretary.agents.orchestrator import (
+    ask,
+    find_course,
+    plan_and_format,
+    professor_email_draft,
+    render_briefing,
+    scaffold_and_describe,
+)
+from school_secretary.config import Settings
+from school_secretary.db.session import session_scope
+
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "query_course_docs",
+            "description": "Answer a question from indexed syllabi and assignment PDFs.",
+            "parameters": {
+                "type": "object",
+                "properties": {"question": {"type": "string"}},
+                "required": ["question"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "plan_assignment",
+            "description": "Break an assignment into sub-tasks with micro-deadlines.",
+            "parameters": {
+                "type": "object",
+                "properties": {"assignment": {"type": "string"}},
+                "required": ["assignment"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "draft_professor_email",
+            "description": "Draft a polite email to a professor using schedule context.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "topic": {"type": "string"},
+                    "course": {"type": "string"},
+                },
+                "required": ["topic"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "render_briefing",
+            "description": "Morning briefing or evening wrap-up.",
+            "parameters": {
+                "type": "object",
+                "properties": {"kind": {"type": "string", "enum": ["morning", "evening"]}},
+                "required": ["kind"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "record_study_session",
+            "description": "Log study minutes against a course.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "course": {"type": "string"},
+                    "minutes": {"type": "integer"},
+                    "notes": {"type": "string"},
+                },
+                "required": ["course", "minutes"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "scaffold_assignment",
+            "description": "Integrity-safe outline or coding stubs. Never finished solutions.",
+            "parameters": {
+                "type": "object",
+                "properties": {"assignment": {"type": "string"}},
+                "required": ["assignment"],
+            },
+        },
+    },
+]
+
+
+def dispatch_tool(name: str, arguments: dict, settings: Settings) -> str:
+    if name == "query_course_docs":
+        return ask(arguments["question"], settings=settings)
+    if name == "plan_assignment":
+        return plan_and_format(arguments["assignment"], settings=settings)
+    if name == "draft_professor_email":
+        with session_scope(settings) as session:
+            return professor_email_draft(
+                session,
+                topic=arguments.get("topic", "question"),
+                course_query=arguments.get("course") or None,
+            )
+    if name == "render_briefing":
+        kind = arguments.get("kind") or "morning"
+        return render_briefing(kind, settings=settings)
+    if name == "record_study_session":
+        with session_scope(settings) as session:
+            course = find_course(session, arguments.get("course", ""))
+            event = record_study_session(
+                session,
+                minutes=int(arguments.get("minutes") or 0),
+                notes=arguments.get("notes") or "",
+                course=course,
+            )
+            return f"Logged {event.minutes} minutes."
+    if name == "scaffold_assignment":
+        return scaffold_and_describe(arguments["assignment"], settings=settings)
+    return f"Unknown tool {name}"
+
+
+def route_locally(text: str, settings: Settings) -> str:
+    stripped = text.strip()
+    lower = stripped.lower()
+    if lower.startswith("/ask"):
+        return ask(stripped[4:].strip() or stripped, settings=settings)
+    if "briefing" in lower or lower in {"morning", "/briefing"}:
+        return render_briefing("morning", settings=settings)
+    if "evening" in lower or "wrap" in lower:
+        return render_briefing("evening", settings=settings)
+    if lower.startswith("/plan") or lower.startswith("plan "):
+        target = re.sub(r"^/?plan\s*", "", stripped, flags=re.I)
+        return plan_and_format(target or "Lab 2", settings=settings)
+    if "email" in lower or lower.startswith("/email"):
+        topic = re.sub(r"^/?email\s*", "", stripped, flags=re.I) or "office hours"
+        with session_scope(settings) as session:
+            return professor_email_draft(session, topic=topic, course_query=None)
+    if lower.startswith("/scaffold") or "scaffold" in lower:
+        target = re.sub(r"^/?scaffold\s*", "", stripped, flags=re.I) or "Lab 2"
+        return scaffold_and_describe(target, settings=settings)
+    if lower.startswith("/study") or lower.startswith("study "):
+        parts = stripped.split()
+        minutes = 30
+        for part in parts:
+            if part.isdigit():
+                minutes = int(part)
+                break
+        course_q = next((p for p in parts if any(ch.isalpha() for ch in p) and p.lower() not in {"study", "/study"}), "")
+        with session_scope(settings) as session:
+            course = find_course(session, course_q) if course_q else None
+            record_study_session(session, minutes=minutes, notes=stripped, course=course)
+        return f"Logged {minutes} minutes" + (f" on {course_q}" if course_q else "") + "."
+    if "?" in stripped or any(word in lower for word in ("late", "penalty", "syllabus", "when is", "due")):
+        return ask(stripped, settings=settings)
+    return ask(stripped, settings=settings)
+
+
+def handle_user_text(text: str, settings: Settings) -> str:
+    llm = complete(
+        system=(
+            "You are My School Secretary for Queen's onQ. Use tools for course facts. "
+            "Never complete assignments. Prefer short, practical answers."
+        ),
+        user=text,
+    )
+    # complete() does not do tool calls by itself; use a dedicated OpenAI round-trip.
+    settings_key = settings.openai_api_key
+    if settings_key:
+        try:
+            from openai import OpenAI
+
+            client = OpenAI(api_key=settings_key)
+            response = client.chat.completions.create(
+                model=settings.openai_model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are My School Secretary. Use tools. Never finish assignments.",
+                    },
+                    {"role": "user", "content": text},
+                ],
+                tools=TOOLS,
+                temperature=0.2,
+            )
+            message = response.choices[0].message
+            if message.tool_calls:
+                outputs = []
+                for call in message.tool_calls:
+                    args = json.loads(call.function.arguments or "{}")
+                    outputs.append(dispatch_tool(call.function.name, args, settings))
+                return "\n\n".join(outputs)
+            if message.content:
+                return message.content
+        except Exception:
+            pass
+    if llm:
+        return llm
+    return route_locally(text, settings)
+
+
+def remember_chat_id(path: Path, chat_id: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(str(chat_id), encoding="utf-8")
+
+
+def load_chat_id(path: Path, fallback: str = "") -> str:
+    if fallback:
+        return fallback
+    if path.exists():
+        return path.read_text(encoding="utf-8").strip()
+    return ""

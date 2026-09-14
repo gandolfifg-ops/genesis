@@ -1,0 +1,37 @@
+[project]
+name = "school-secretary"
+version = "0.1.0"
+description = "Multi-agent RAG executive assistant for Queen's onQ (Brightspace)"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "beautifulsoup4>=4.12",
+    "chromadb>=0.5",
+    "httpx>=0.27",
+    "llama-index-core>=0.12",
+    "lxml>=5.3",
+    "mcp>=1.9",
+    "openai>=1.40",
+    "playwright>=1.47",
+    "pydantic-settings>=2.4",
+    "pymupdf>=1.24",
+    "python-dateutil>=2.9",
+    "python-dotenv>=1.0",
+    "python-telegram-bot[job-queue]>=21.6",
+    "sqlalchemy>=2.0",
+    "typer>=0.12",
+]
+
+[project.scripts]
+school-secretary = "school_secretary.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.12.13,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = ["pytest>=8.3"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
