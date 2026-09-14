@@ -196,7 +196,9 @@ def habits() -> None:
 
 @app.command()
 def status() -> None:
-    """Print SQLite row counts (safe to run repeatedly)."""
+    """Print SQLite row counts and live vs fixture course codes (no PII)."""
+    from school_secretary.db.live import FIXTURE_ORG_UNIT_IDS, live_course_ids
+    from school_secretary.db.models import Course
     from school_secretary.db.session import session_scope
     from school_secretary.ingest.brightspace import snapshot_counts
 
@@ -204,6 +206,13 @@ def status() -> None:
     init_db(settings)
     with session_scope(settings) as session:
         print(snapshot_counts(session))
+        live_ids = live_course_ids(session)
+        rows = session.query(Course).order_by(Course.code).all()
+        live_codes = [c.code for c in rows if c.org_unit_id not in FIXTURE_ORG_UNIT_IDS]
+        fixture_codes = [c.code for c in rows if c.org_unit_id in FIXTURE_ORG_UNIT_IDS]
+        print({"live_course_codes": live_codes, "fixture_course_codes": fixture_codes})
+        if live_ids is None and not rows:
+            print("SQLite has schema but no courses. Run ingest --live on WSL or ingest --fixtures.")
 
 
 @app.command("index-docs")

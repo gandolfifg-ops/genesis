@@ -298,9 +298,11 @@ src/school_secretary/
   whatsapp_app/
   calendar_sync.py
 data/fixtures/pdfs/   generated on ingest
-data/raw/             gitignored raw JSON + PDFs
-data/calendar/        gitignored ICS mock calendar
+data/raw/             gitignored raw JSON + PDFs (from ingest --live or fixtures)
+data/calendar/        gitignored ICS
+data/browser/         Playwright Chromium profile — never commit (cookies/cache)
 storage_state.json    gitignored Playwright cookies (session.json is a copy)
+data/secretary.db     local SQLite; gitignored by default — do not commit Chromium `data/browser/`
 ```
 
 ## Academic integrity

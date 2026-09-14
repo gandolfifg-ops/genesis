@@ -13,6 +13,7 @@ htmlcov/
 data/*
 !data/fixtures/
 !data/fixtures/**
+data/browser/
 *.db
 .DS_Store
 agent-tools/
