@@ -157,13 +157,18 @@ uv run pytest
 
 # Live onQ — headed Chromium on your Windows desktop:
 uv run school-secretary login
-# NetID, password, Duo, wait for onQ homepage, press Enter in this WSL terminal
+# NetID, password, Duo, wait for onQ homepage, press Enter.
+# That same window then fetches enrollments/news/dropbox into secretary.db.
+
+# Later refresh (headed, same data/browser/ profile — do not use --headless):
 uv run school-secretary ingest --live
+uv run school-secretary ingest --live --headed   # explicit; this is the default
 
 # Optional after ingest:
+uv run school-secretary status
+# live_course_codes must be non-empty after a successful login/ingest
 uv run school-secretary calendar-sync
 uv run school-secretary habits
-uv run school-secretary status
 uv run school-secretary whatsapp    # mock on :43148 unless Meta keys are set
 uv run school-secretary telegram    # needs TELEGRAM_BOT_TOKEN in .env
 ```
@@ -186,9 +191,9 @@ uv run school-secretary login
 1. A **real Chromium** window opens on your Windows desktop (Playwright persistent profile, 1280×900).
 2. It goes to the Queen’s onQ login at **`https://onq.queensu.ca/d2l/home`**.
 3. Type your **NetID** and **password**, then approve **Duo MFA**.
-4. When you reach the **onQ homepage** (course tiles / Brightspace navbar), leave the window open, switch back to the **WSL terminal**, and **press Enter**.
+4. When you reach the **onQ homepage** (course tiles / Brightspace navbar), leave the window open, switch back to the **WSL terminal**, and **press Enter**. Live LE/LP ingest then runs **in that same headed window** before Chromium closes, so `data/secretary.db` is populated without a second launch.
 
-**Where cookies are saved**
+**Where the session is saved**
 
 | Path | What |
 | --- | --- |
@@ -196,17 +201,20 @@ uv run school-secretary login
 | `session.json` | Copy of the same JSON (also gitignored) so anything still looking for the old name keeps working |
 | `data/browser/` | Persistent Chromium user-data dir for the same profile |
 
-The login command prints these paths when it finishes. Duo is only needed during this one visible login.
+The login command prints these paths when it finishes. Duo is only needed during this one visible login. After you press Enter, ingest runs in-session (same persistent profile under `data/browser/`).
 
-**Silent / headless refresh after that**
+**Headed refresh after that** (same profile; opens a visible Chromium window)
 
 ```bash
 uv run school-secretary ingest --live
+# same as: uv run school-secretary ingest --live --headed
 ```
 
-This does **not** open a window and should **not** prompt Duo again. It:
+Do **not** pass `--headless` after a headed login. Brightspace TLS/session cookies from headed Chromium are invalidated when the same profile is relaunched headless (HTTP 403). `--headless` is only for diagnostics.
 
-1. Starts **headless Chromium** with the same persistent profile and `storage_state.json` (same cookies, user-agent, and CSRF as login)
+`ingest --live` (headed):
+
+1. Starts **headed Chromium** (`headless=False`) with the persistent profile `data/browser/` and overlays `storage_state.json` (Playwright forbids `storage_state=` on persistent launch)
 2. Opens `{ONQ_BASE_URL}/d2l/home` with `wait_until="networkidle"` so `d2lSessionVal` is set, then calls Brightspace LP/LE APIs **through that browser context** (not a standalone HTTP client):
    - `/d2l/api/lp/1.47/enrollments/myenrollments/`
    - `/d2l/api/le/1.47/{orgUnitId}/news/`
@@ -215,7 +223,7 @@ This does **not** open a window and should **not** prompt Duo again. It:
 4. Downloads PDF attachments with the same browser request context; if that fails, scrapes `a[href]` PDF links from the course home as a DOM fallback
 5. Upserts Courses / Assignments / Announcements / Documents into SQLite (idempotent)
 
-Fixture ingest (`ingest --fixtures` / `demo`) never launches Chromium.
+Fixture ingest (`ingest --fixtures` / `demo`) never launches Chromium. Never commit `.env` or `data/browser/`.
 
 If `storage_state.json` is missing:
 
@@ -223,7 +231,7 @@ If `storage_state.json` is missing:
 Missing .../storage_state.json. Run `uv run school-secretary login` first (NetID, password, Duo).
 ```
 
-SSO session capture on your WSL machine is the intended path; this repo only stores cookies locally.
+SSO session capture on your WSL machine is the intended path; this repo only stores the session locally. Do not log cookie values.
 
 ---
 

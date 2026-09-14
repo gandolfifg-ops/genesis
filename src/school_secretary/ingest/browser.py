@@ -22,8 +22,8 @@ Run this on YOUR machine (Windows WSL), not a remote cloud desktop:
 
 Playwright storage state is saved to {storage_state_path}
 (and copied to {session_copy} so older readers still work).
-The persistent profile stays in {profile_dir}. Headless ingest uses those
-cookies afterward so Duo is not prompted on every refresh.
+The persistent profile stays in {profile_dir}. After you press Enter, this same
+window fetches enrollments/news/dropbox into SQLite (no second Chromium launch).
 """.strip()
 
 
@@ -76,10 +76,22 @@ async def _login_async(settings: Settings) -> Path:
         )
         await asyncio.to_thread(input, "Press Enter after you can see the onQ homepage...")
         await context.storage_state(path=str(dest))
-        await context.close()
-    _write_storage_state_copy(settings, dest)
-    print(f"Saved Playwright storage state to {dest}")
-    print(f"Copied to {settings.session_json_copy_path} as well.")
+        _write_storage_state_copy(settings, dest)
+        print(f"Saved Playwright storage state to {dest}")
+        print(f"Copied to {settings.session_json_copy_path} as well.")
+        print("Fetching onQ courses in this same window (LE/LP via the headed session)...")
+        from school_secretary.db.session import init_db
+        from school_secretary.ingest.brightspace import IngestError, ingest_live_from_context
+
+        try:
+            init_db(settings)
+            counts = await ingest_live_from_context(settings, context, page)
+            print(counts)
+        except IngestError as exc:
+            print(str(exc))
+            print("Session was saved. Refresh later with: uv run school-secretary ingest --live")
+        finally:
+            await context.close()
     return dest
 
 
@@ -88,7 +100,7 @@ def login(settings: Settings | None = None) -> Path:
     return asyncio.run(_login_async(settings))
 
 
-async def _headless_context(settings: Settings):
+async def _open_persistent_context(settings: Settings, *, headless: bool):
     from playwright.async_api import async_playwright
 
     state = settings.session_path
@@ -96,19 +108,20 @@ async def _headless_context(settings: Settings):
         raise FileNotFoundError(
             f"No storage state at {settings.storage_state_path}. "
             "Run `uv run school-secretary login` once with a visible browser "
-            "(NetID, password, Duo). Headless ingest will reuse that JSON so MFA "
-            "is not prompted every time."
+            "(NetID, password, Duo). Live ingest reuses data/browser/ in a headed window."
         )
     playwright = await async_playwright().start()
-    # Persistent profile matches headed login. Playwright forbids storage_state=
-    # on launch_persistent_context, so overlay cookies from the JSON instead.
-    context = await playwright.chromium.launch_persistent_context(
-        user_data_dir=str(settings.browser_profile_dir),
-        headless=True,
-        viewport={"width": 1280, "height": 900},
-    )
-    await _overlay_storage_state(context, state)
-    return playwright, context
+    try:
+        context = await playwright.chromium.launch_persistent_context(
+            user_data_dir=str(settings.browser_profile_dir),
+            headless=headless,
+            viewport={"width": 1280, "height": 900},
+        )
+        await _overlay_storage_state(context, state)
+        return playwright, context
+    except Exception:
+        await playwright.stop()
+        raise
 
 
 async def _overlay_storage_state(context, state_path: Path) -> None:

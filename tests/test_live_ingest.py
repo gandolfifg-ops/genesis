@@ -122,3 +122,30 @@ def test_fixture_ingest_still_skips_playwright(tmp_path, monkeypatch):
     counts = ingest_fixtures(get_settings())
     assert counts["courses"] == 3
     assert counts["assignments"] == 3
+
+
+def test_ingest_live_defaults_headed_and_reuses_persistent_context():
+    import inspect
+    from pathlib import Path
+
+    from school_secretary.ingest.brightspace import ingest_live, ingest_live_from_context
+
+    params = inspect.signature(ingest_live).parameters
+    assert params["headed"].default is True
+    assert inspect.iscoroutinefunction(ingest_live_from_context)
+
+    brightspace = Path("src/school_secretary/ingest/brightspace.py").read_text(encoding="utf-8")
+    assert "ingest_live_from_context" in brightspace
+    assert "_open_persistent_context" in brightspace
+    assert "headless=False" in brightspace
+    assert "httpx" not in brightspace
+
+    browser = Path("src/school_secretary/ingest/browser.py").read_text(encoding="utf-8")
+    assert "ingest_live_from_context" in browser
+    assert "user_data_dir" in browser
+    assert "headless=False" in browser
+    assert "data/browser" in browser or "browser_profile_dir" in browser
+
+    cli = Path("src/school_secretary/cli.py").read_text(encoding="utf-8")
+    assert "--headed/--headless" in cli
+    assert "headed=headed" in cli

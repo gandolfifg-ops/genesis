@@ -55,6 +55,11 @@ def demo() -> None:
 @app.command()
 def ingest(
     fixtures: bool = typer.Option(True, "--fixtures/--live", help="Fixture JSON/PDFs (default) or live onQ."),
+    headed: bool = typer.Option(
+        True,
+        "--headed/--headless",
+        help="Visible Chromium for --live (default). --headless invalidates a headed onQ session.",
+    ),
 ) -> None:
     """Ingest Brightspace data into SQLite. Default is offline fixtures."""
     settings = get_settings()
@@ -67,7 +72,7 @@ def ingest(
     from school_secretary.ingest.brightspace import ingest_live, IngestError
 
     try:
-        print(ingest_live(settings))
+        print(ingest_live(settings, headed=headed))
     except IngestError as exc:
         print(str(exc), file=sys.stderr)
         raise SystemExit(1)
@@ -75,7 +80,7 @@ def ingest(
 
 @app.command()
 def login() -> None:
-    """One-time Queen's SSO in a visible Chromium window; saves storage_state.json."""
+    """Queen's SSO in a visible Chromium window; then live LE/LP ingest in that same session."""
     from school_secretary.ingest.browser import login as browser_login
 
     browser_login(get_settings())
@@ -212,7 +217,7 @@ def status() -> None:
         fixture_codes = [c.code for c in rows if c.org_unit_id in FIXTURE_ORG_UNIT_IDS]
         print({"live_course_codes": live_codes, "fixture_course_codes": fixture_codes})
         if live_ids is None and not rows:
-            print("SQLite has schema but no courses. Run ingest --live on WSL or ingest --fixtures.")
+            print("SQLite has schema but no courses. Run `login` or `ingest --live` on WSL (headed), or `ingest --fixtures`.")
 
 
 @app.command("index-docs")

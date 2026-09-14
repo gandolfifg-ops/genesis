@@ -35,7 +35,7 @@ class IngestError(RuntimeError):
 SESSION_EXPIRED = (
     "onQ session expired or not authorized. "
     "Re-run `uv run school-secretary login` on WSL (NetID, password, Duo). "
-    "Headless ingest will not open a browser."
+    "Live ingest must run headed (`ingest --live`); do not pass --headless after a headed login."
 )
 
 
@@ -377,113 +377,135 @@ class PlaywrightLEClient:
         return True
 
 
-def ingest_live(settings: Settings | None = None) -> dict[str, int]:
-    """Headless Chromium: LP/LE APIs + attachment download via the login session."""
+def ingest_live(settings: Settings | None = None, *, headed: bool = True) -> dict[str, int]:
+    """LP/LE APIs + attachment download via the persistent Chromium profile.
+
+    Brightspace TLS/session cookies from a headed login are invalidated when
+    Chromium relaunches headless, so the default is headed (headless=False).
+    """
     import asyncio
 
-    return asyncio.run(_ingest_live_async(settings or get_settings()))
+    return asyncio.run(_ingest_live_async(settings or get_settings(), headed=headed))
 
 
-async def _ingest_live_async(settings: Settings) -> dict[str, int]:
-    from school_secretary.ingest.browser import _headless_context, download_with_dom, scrape_pdf_links
+async def ingest_live_from_context(settings: Settings, context, page) -> dict[str, int]:
+    """LE/LP extraction in an already-authenticated Playwright context.
+
+    Used at the end of ``school-secretary login`` (same headed window) and by
+    ``ingest --live``. Warms ``/d2l/home`` to ``networkidle`` so D2L session
+    cookies exist before any API GET. Never logs cookie names or values.
+    """
+    from school_secretary.db.session import init_db
+    from school_secretary.ingest.browser import download_with_dom, scrape_pdf_links
     from school_secretary.ingest.parser import (
         extract_attachments_from_html,
         extract_attachments_from_json,
         merge_attachments,
     )
 
+    home = settings.onq_base_url.rstrip("/") + "/d2l/home"
+    try:
+        await page.goto(home, wait_until="networkidle", timeout=90_000)
+    except Exception as exc:
+        landed = (page.url or "").lower()
+        if "/d2l/home" not in landed:
+            raise IngestError(f"{SESSION_EXPIRED} (could not open onQ home)") from exc
+    landed = (page.url or "").lower()
+    if any(part in landed for part in ("login", "adfs", "microsoftonline")):
+        raise IngestError(f"{SESSION_EXPIRED} (landed on a login page)")
+    await _wait_for_d2l_csrf_cookie(context, page)
+
+    client = PlaywrightLEClient(context, settings.onq_base_url)
+    enrollments = await client.my_enrollments()
+    if not enrollments:
+        raise IngestError(
+            "onQ returned an empty enrollment list. Re-run `school-secretary login` if the session is stale."
+        )
+    news_by_org: dict[str, list[dict[str, Any]]] = {}
+    dropbox_by_org: dict[str, list[dict[str, Any]]] = {}
+    attachment_files: dict[str, Path] = {}
+    parsed_courses = [p for e in enrollments if (p := parse_enrollment_item(e))]
+
+    for parsed in parsed_courses:
+        org_id = parsed["org_unit_id"]
+        news_by_org[org_id] = await client.news(org_id)
+        dropbox_by_org[org_id] = await client.dropbox_folders(org_id)
+        raw_dir = _raw_course_dir(settings, org_id)
+        for kind, collection in (
+            ("news", news_by_org[org_id]),
+            ("dropbox", dropbox_by_org[org_id]),
+        ):
+            for item in collection:
+                html = ""
+                body = item.get("Body") or item.get("Instructions") or {}
+                if isinstance(body, dict):
+                    html = body.get("Html") or ""
+                parent_id = str(item.get("Id") or item.get("id") or "")
+                for attachment in merge_attachments(
+                    extract_attachments_from_json(item),
+                    extract_attachments_from_html(html),
+                ):
+                    filename = attachment.get("filename") or f"{attachment.get('file_id')}.bin"
+                    dest = raw_dir / filename
+                    url = attachment.get("url") or ""
+                    file_id = attachment.get("file_id") or ""
+                    if not url and file_id and parent_id:
+                        url = attachment_api_path(kind, org_id, parent_id, file_id)
+                    if url and await client.download_file(url, dest):
+                        attachment_files[filename] = dest
+
+    for parsed in parsed_courses:
+        org_id = parsed["org_unit_id"]
+        raw_dir = _raw_course_dir(settings, org_id)
+        course_url = f"{settings.onq_base_url.rstrip('/')}/d2l/home/{org_id}"
+        try:
+            links = await scrape_pdf_links(page, course_url)
+        except Exception:
+            continue
+        for link in links:
+            filename = link.rsplit("/", 1)[-1].split("?")[0] or hashlib.sha256(link.encode()).hexdigest()[:12] + ".pdf"
+            if "?" in filename:
+                filename = filename.split("?")[0]
+            if not filename.lower().endswith(".pdf"):
+                filename += ".pdf"
+            dest = raw_dir / filename
+            if dest.exists():
+                attachment_files[filename] = dest
+                continue
+            if await client.download_file(link, dest):
+                attachment_files[filename] = dest
+                continue
+            try:
+                await download_with_dom(page, link, dest)
+                attachment_files[filename] = dest
+            except Exception:
+                continue
+
+    init_db(settings)
+    return ingest_payloads(settings, enrollments, news_by_org, dropbox_by_org, attachment_files)
+
+
+async def _ingest_live_async(settings: Settings, *, headed: bool = True) -> dict[str, int]:
+    from school_secretary.ingest.browser import _open_persistent_context
+
     if not settings.session_path.exists():
         raise IngestError(
             f"Missing {settings.storage_state_path}. "
             "Run `uv run school-secretary login` first (NetID, password, Duo). "
-            "Headless refresh reuses that JSON so MFA is not prompted every time."
+            "Live ingest reuses data/browser/ in a headed window (headless=False)."
         )
 
+    # headless=False by default: headed TLS/session cookies fail under headless Chromium.
+    headless = False if headed else True
     playwright = None
     context = None
     try:
         try:
-            playwright, context = await _headless_context(settings)
+            playwright, context = await _open_persistent_context(settings, headless=headless)
         except FileNotFoundError as exc:
             raise IngestError(str(exc)) from None
         page = context.pages[0] if context.pages else await context.new_page()
-        home = settings.onq_base_url.rstrip("/") + "/d2l/home"
-        try:
-            await page.goto(home, wait_until="networkidle", timeout=90_000)
-        except Exception as exc:
-            landed = (page.url or "").lower()
-            if "/d2l/home" not in landed:
-                raise IngestError(
-                    f"{SESSION_EXPIRED} (headless could not open onQ home)"
-                ) from exc
-        landed = (page.url or "").lower()
-        if any(part in landed for part in ("login", "adfs", "microsoftonline")):
-            raise IngestError(f"{SESSION_EXPIRED} (headless landed on a login page)")
-        await _wait_for_d2l_csrf_cookie(context, page)
-
-        client = PlaywrightLEClient(context, settings.onq_base_url)
-        enrollments = await client.my_enrollments()
-        news_by_org: dict[str, list[dict[str, Any]]] = {}
-        dropbox_by_org: dict[str, list[dict[str, Any]]] = {}
-        attachment_files: dict[str, Path] = {}
-        parsed_courses = [p for e in enrollments if (p := parse_enrollment_item(e))]
-
-        for parsed in parsed_courses:
-            org_id = parsed["org_unit_id"]
-            news_by_org[org_id] = await client.news(org_id)
-            dropbox_by_org[org_id] = await client.dropbox_folders(org_id)
-            raw_dir = _raw_course_dir(settings, org_id)
-            for kind, collection in (
-                ("news", news_by_org[org_id]),
-                ("dropbox", dropbox_by_org[org_id]),
-            ):
-                for item in collection:
-                    html = ""
-                    body = item.get("Body") or item.get("Instructions") or {}
-                    if isinstance(body, dict):
-                        html = body.get("Html") or ""
-                    parent_id = str(item.get("Id") or item.get("id") or "")
-                    for attachment in merge_attachments(
-                        extract_attachments_from_json(item),
-                        extract_attachments_from_html(html),
-                    ):
-                        filename = attachment.get("filename") or f"{attachment.get('file_id')}.bin"
-                        dest = raw_dir / filename
-                        url = attachment.get("url") or ""
-                        file_id = attachment.get("file_id") or ""
-                        if not url and file_id and parent_id:
-                            url = attachment_api_path(kind, org_id, parent_id, file_id)
-                        if url and await client.download_file(url, dest):
-                            attachment_files[filename] = dest
-
-        for parsed in parsed_courses:
-            org_id = parsed["org_unit_id"]
-            raw_dir = _raw_course_dir(settings, org_id)
-            course_url = f"{settings.onq_base_url.rstrip('/')}/d2l/home/{org_id}"
-            try:
-                links = await scrape_pdf_links(page, course_url)
-            except Exception:
-                continue
-            for link in links:
-                filename = link.rsplit("/", 1)[-1].split("?")[0] or hashlib.sha256(link.encode()).hexdigest()[:12] + ".pdf"
-                if "?" in filename:
-                    filename = filename.split("?")[0]
-                if not filename.lower().endswith(".pdf"):
-                    filename += ".pdf"
-                dest = raw_dir / filename
-                if dest.exists():
-                    attachment_files[filename] = dest
-                    continue
-                if await client.download_file(link, dest):
-                    attachment_files[filename] = dest
-                    continue
-                try:
-                    await download_with_dom(page, link, dest)
-                    attachment_files[filename] = dest
-                except Exception:
-                    continue
-
-        return ingest_payloads(settings, enrollments, news_by_org, dropbox_by_org, attachment_files)
+        return await ingest_live_from_context(settings, context, page)
     finally:
         if context is not None:
             await context.close()
