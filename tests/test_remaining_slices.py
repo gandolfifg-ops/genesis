@@ -84,9 +84,10 @@ def test_planner_uses_logged_minutes(tmp_path, monkeypatch):
         session.add(assignment)
         session.flush()
         none = plan_assignment(session, assignment, now=now)
+        first_due = none[0].due_at
         record_study_session(session, minutes=120, notes="logged", course=course, when=now)
         lots = plan_assignment(session, assignment, now=now)
-        assert none[0].due_at < lots[0].due_at
+        assert first_due < lots[0].due_at
 
 
 def test_fixture_ingest_is_idempotent(tmp_path, monkeypatch):
@@ -100,11 +101,12 @@ def test_fixture_ingest_is_idempotent(tmp_path, monkeypatch):
     assert first["assignments"] == second["assignments"] == 3
     assert first["announcements"] == second["announcements"] == 3
     assert first["habits"] == second["habits"]
+    assert first["documents"] == second["documents"]
     with session_scope(settings) as session:
         assert session.query(Course).count() == 3
         assert session.query(Assignment).count() == 3
         assert session.query(Announcement).count() == 3
-        assert session.query(Document).count() == first["documents"]
+        assert session.query(Document).count() == first["documents"] == 7
         assert session.query(StudyHabitEvent).filter_by(kind="study_session").count() == 4
 
 

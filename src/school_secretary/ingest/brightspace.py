@@ -123,7 +123,7 @@ def upsert_document(
     digest = file_hash(path)
     row = (
         session.query(Document)
-        .filter_by(course_id=course.id, filename=filename, content_hash=digest)
+        .filter_by(course_id=course.id, filename=filename)
         .one_or_none()
     )
     text = extract_pdf_text(path) if path.suffix.lower() == ".pdf" else path.read_text(encoding="utf-8", errors="ignore")
@@ -135,6 +135,7 @@ def upsert_document(
             content_hash=digest,
         )
         session.add(row)
+    row.content_hash = digest
     row.path = str(path)
     row.extracted_text = text
     row.doc_type = kind

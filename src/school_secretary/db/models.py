@@ -65,7 +65,7 @@ class Announcement(Base):
 
 class Document(Base):
     __tablename__ = "documents"
-    __table_args__ = (UniqueConstraint("course_id", "filename", "content_hash", name="uq_doc_hash"),)
+    __table_args__ = (UniqueConstraint("course_id", "filename", name="uq_doc_file"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     course_id: Mapped[int] = mapped_column(ForeignKey("courses.id"), index=True)
