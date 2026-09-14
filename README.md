@@ -206,14 +206,16 @@ uv run school-secretary ingest --live
 
 This does **not** open a window and should **not** prompt Duo again. It:
 
-1. Loads cookies from `storage_state.json` (or `session.json` if that is the only file present)
-2. Calls Brightspace LE APIs with those cookies:
+1. Starts **headless Chromium** with the same persistent profile and `storage_state.json` (same cookies, user-agent, and CSRF as login)
+2. Opens onQ home, then calls Brightspace LP/LE APIs **through that browser context** (not a standalone HTTP client):
    - `/d2l/api/lp/1.47/enrollments/myenrollments/`
    - `/d2l/api/le/1.47/{orgUnitId}/news/`
    - `/d2l/api/le/1.47/{orgUnitId}/dropbox/folders/`
 3. Saves raw JSON under `data/raw/{orgUnitId}/`
-4. Downloads PDF attachments over HTTP; if that fails, a **headless** Chromium context (same profile + `storage_state.json`) scrapes `a[href]` PDF links as a DOM fallback
+4. Downloads PDF attachments with the same browser request context; if that fails, scrapes `a[href]` PDF links from the course home as a DOM fallback
 5. Upserts Courses / Assignments / Announcements / Documents into SQLite (idempotent)
+
+Fixture ingest (`ingest --fixtures` / `demo`) never launches Chromium.
 
 If `storage_state.json` is missing:
 

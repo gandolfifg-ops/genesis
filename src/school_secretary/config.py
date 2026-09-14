@@ -56,7 +56,7 @@ class Settings(BaseSettings):
 
     @property
     def session_json_copy_path(self) -> Path:
-        return ROOT / "session.json"
+        return Path(self.school_secretary_session_path).expanduser().parent / "session.json"
 
     @property
     def session_path(self) -> Path:

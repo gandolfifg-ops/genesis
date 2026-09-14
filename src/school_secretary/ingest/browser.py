@@ -100,13 +100,27 @@ async def _headless_context(settings: Settings):
             "is not prompted every time."
         )
     playwright = await async_playwright().start()
+    # Persistent profile matches headed login. Playwright forbids storage_state=
+    # on launch_persistent_context, so overlay cookies from the JSON instead.
     context = await playwright.chromium.launch_persistent_context(
         user_data_dir=str(settings.browser_profile_dir),
         headless=True,
-        storage_state=str(state),
         viewport={"width": 1280, "height": 900},
     )
+    await _overlay_storage_state(context, state)
     return playwright, context
+
+
+async def _overlay_storage_state(context, state_path: Path) -> None:
+    data = json.loads(state_path.read_text(encoding="utf-8"))
+    cookies = data.get("cookies") or []
+    if not cookies:
+        return
+    try:
+        await context.add_cookies(cookies)
+    except Exception:
+        # Persistent profile from headed login is enough; do not log cookie errors.
+        return
 
 
 async def download_with_dom(page, url: str, dest: Path) -> Path:
