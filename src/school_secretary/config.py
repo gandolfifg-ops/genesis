@@ -74,7 +74,14 @@ class Settings(BaseSettings):
 
     @property
     def database_path(self) -> Path:
-        return self.data_dir / "secretary.db"
+        target = self.data_dir / "secretary.db"
+        if not target.exists():
+            import shutil
+            bundled = ROOT / "src" / "school_secretary" / "data" / "secretary.db"
+            if bundled.exists():
+                self.data_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(bundled, target)
+        return target
 
     @property
     def chroma_path(self) -> Path:
