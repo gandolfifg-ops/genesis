@@ -196,7 +196,7 @@ async def _on_text(update, context) -> None:
 
 
 async def _on_error(update, context) -> None:
-    print("Telegram handler error: {e}; continuing to poll.", file=sys.stderr)
+    import traceback; print(f"Telegram handler error: {e}\n{traceback.format_exc()}", file=sys.stderr)
     if update and getattr(update, "message", None):
         await _reply(update, "Something went wrong on my side. Try that again in a moment.")
 
