@@ -75,14 +75,17 @@ class Settings(BaseSettings):
     @property
     def database_path(self) -> Path:
         target = self.data_dir / "secretary.db"
+        pkg_dir = Path(__file__).resolve().parent
+        bundled = pkg_dir / "data" / "secretary.db"
         if not target.exists() or target.stat().st_size == 0:
-            import shutil
-            bundled = ROOT / "src" / "school_secretary" / "data" / "secretary.db"
             if bundled.exists():
                 self.data_dir.mkdir(parents=True, exist_ok=True)
+                import shutil
                 shutil.copy2(bundled, target)
+                print(f"[BOOT SEED] Successfully copied DB from {bundled} to {target}", flush=True)
+            else:
+                print(f"[BOOT SEED ERROR] Bundled DB file not found at {bundled}", flush=True)
         return target
-
     @property
     def chroma_path(self) -> Path:
         return self.data_dir / "chroma"
