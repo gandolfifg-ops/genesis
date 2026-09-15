@@ -1,5 +1,5 @@
-from school_secretary.config import _seed_database_if_missing
 from __future__ import annotations
+from school_secretary.config import _seed_database_if_missing
 
 from collections.abc import Iterator
 from contextlib import contextmanager
