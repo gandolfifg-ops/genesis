@@ -154,20 +154,41 @@ def _seed_database_if_missing(data_dir: Path) -> None:
             print(f"[BOOT SEED FAIL] Bundled DB not found at {bundled}", flush=True)
 
 
+
 def force_seed_database() -> None:
+    import os, shutil, sqlite3
+    from pathlib import Path
     data_dir = Path(os.getenv("SCHOOL_SECRETARY_DATA_DIR", "/app/data"))
     target = data_dir / "secretary.db"
     pkg_dir = Path(__file__).resolve().parent
     bundled = pkg_dir / "data" / "secretary.db"
     
-    if not target.exists() or target.stat().st_size == 0:
+    needs_seed = False
+    if not target.exists():
+        print(f"[BOOT SEED] Target missing.", flush=True)
+        needs_seed = True
+    else:
+        try:
+            conn = sqlite3.connect(target)
+            c = conn.cursor()
+            c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='courses'")
+            if not c.fetchone():
+                print(f"[BOOT SEED] DB exists ({target.stat().st_size} bytes) but is empty. Overwriting...", flush=True)
+                needs_seed = True
+            else:
+                print(f"[BOOT SEED] DB looks healthy.", flush=True)
+            conn.close()
+        except Exception as e:
+            print(f"[BOOT SEED] DB check failed: {e}. Overwriting...", flush=True)
+            needs_seed = True
+
+    if needs_seed:
         if bundled.exists():
             data_dir.mkdir(parents=True, exist_ok=True)
-            import shutil
             shutil.copy2(bundled, target)
-            print(f"[BOOT SEED SUCCESS] Copied {bundled} ({bundled.stat().st_size} bytes) to {target}", flush=True)
+            print(f"[BOOT SEED SUCCESS] Copied {bundled.stat().st_size} bytes to volume.", flush=True)
         else:
-            print(f"[BOOT SEED FAIL] Bundled DB not found at {bundled}", flush=True)
+            print(f"[BOOT SEED FAIL] Could not find bundled file at {bundled}", flush=True)
 
 try:
     force_seed_database()
