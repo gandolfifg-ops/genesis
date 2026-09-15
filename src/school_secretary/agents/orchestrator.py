@@ -280,12 +280,18 @@ def format_deadline_alert(settings: Settings | None = None, now: datetime | None
             due = _aware(row.due_at, tz)
             if not (now <= due <= horizon):
                 continue
+            from school_secretary.agents.tasks import is_snoozed
+
+            if is_snoozed(settings, row.id, now=now):
+                continue
             key = f"assignment-{row.id}-{due.isoformat()}"
             if key in sent:
                 continue
             new_sent[key] = now.isoformat()
             due_s = due.strftime("%a %b %d %H:%M")
-            lines.append(f"- **{row.course.code}:** {row.title} ({due_s})")
+            lines.append(
+                f"- **{row.course.code}:** {row.title} ({due_s}) — `/done a{row.id}` `/snooze a{row.id}`"
+            )
     if not lines:
         return None
     path.parent.mkdir(parents=True, exist_ok=True)

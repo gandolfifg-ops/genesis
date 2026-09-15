@@ -242,6 +242,14 @@ def test_telegram_daemon_reconnects_and_schedules_alerts():
     env = Path(".env.example").read_text(encoding="utf-8")
     assert "ANTHROPIC_API_KEY" in env
     assert "TELEGRAM_BOT_TOKEN" in env
+    assert "GOOGLE_OAUTH_CLIENT_ID" in env
+    assert "GOOGLE_OAUTH_CLIENT_SECRET" in env
+    assert "GOOGLE_OAUTH_REFRESH_TOKEN" in env
+    assert "session-guard" in text
+    assert 'allowed_updates=["message", "callback_query"]' in text
+    assert "CommandHandler(\"done\"" in text
+    assert "CommandHandler(\"snooze\"" in text
+    assert "CommandHandler(\"streak\"" in text
     llm = Path("src/school_secretary/agents/llm.py").read_text(encoding="utf-8")
     assert "_complete_anthropic" in llm
     assert "anthropic_api_key" in llm
@@ -290,6 +298,9 @@ def test_help_and_habits_routes(tmp_path, monkeypatch):
     help_text = route_locally("/help", settings)
     assert "/habits" in help_text
     assert "/calendar" in help_text
+    assert "/done" in help_text
+    assert "/snooze" in help_text
+    assert "/streak" in help_text
     assert "never complete" in help_text.lower()
     habits = route_locally("/habits", settings)
     assert "This week:" in habits or "No study sessions" in habits

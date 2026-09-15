@@ -262,7 +262,13 @@ def merge_attachments(*groups: list[dict[str, str]]) -> list[dict[str, str]]:
 
 
 def infer_assignment_type(title: str, instructions: str) -> str:
+    heading = (title or "").lower()
     blob = f"{title}\n{instructions}".lower()
+    if any(word in heading for word in ("quiz", "midterm", "exam")) or re.search(
+        r"\btests?\b", heading
+    ):
+        if "lab" not in heading:
+            return "quiz"
     if any(word in blob for word in ("essay", "paper", "word count", "thesis")):
         return "essay"
     if any(word in blob for word in ("lab", "implement", "unit test", "github", "code", "program")):

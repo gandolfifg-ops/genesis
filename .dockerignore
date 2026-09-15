@@ -1,0 +1,13 @@
+.git
+.venv
+__pycache__
+.pytest_cache
+*.pyc
+.env
+session.json
+storage_state.json
+data/browser
+data/chroma
+*.db
+agent-tools
+.cursor

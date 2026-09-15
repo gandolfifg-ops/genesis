@@ -134,10 +134,27 @@ With a token the process polls Telegram (auto-reconnect on errors) and schedules
 - morning briefing **08:00 America/Toronto**
 - evening check-in **20:00 America/Toronto**
 - hourly **24-hour deadline alerts** to `TELEGRAM_CHAT_ID` or `data/telegram_chat_id.txt`
+- session-guard every **6 hours** (expired Duo/login cookies, or live data older than 48h)
 
 Leave it running (`uv run school-secretary telegram`); no manual babysitting. Replies use Markdown and strip source filenames and local paths.
 
-Commands: `/start` `/help` `/ask` `/briefing` `/evening` `/plan` `/scaffold` `/email` `/study` `/habits` `/calendar` plus free-text questions.
+Commands: `/start` `/help` `/ask` `/briefing` `/evening` `/plan` `/scaffold` `/email` `/study` `/habits` `/calendar` `/done` `/snooze` `/streak` `/tasks` plus free-text questions.
+
+Task buttons (inline keyboard) check off work without opening a terminal:
+
+| Command | What it does |
+| --- | --- |
+| `/done 12` | Mark subtask `12` done |
+| `/done a12` | Check off every step on assignment `12` |
+| `/snooze 12` or `/snooze a12` | Hide that deadline alert for 24 hours |
+| `/streak` | Study streak + log 45 min from the keyboard |
+| `/tasks` | Open tasks with Done / Snooze buttons |
+
+If Brightspace cookies expire or live ingest is more than 48 hours old, the bot asks you to run headed `login` / `ingest --live` on WSL. Cookie values are never printed.
+
+```bash
+uv run school-secretary session-health
+```
 
 ---
 
@@ -244,17 +261,44 @@ SSO session capture on your WSL machine is the intended path; this repo only sto
 
 ## Google Calendar
 
+`GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET` are read from `.env` automatically when present.
+
 ```bash
 uv run school-secretary calendar-sync
 ```
 
-Without `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, and `GOOGLE_OAUTH_REFRESH_TOKEN`, this writes `data/calendar/school-secretary.ics` (assignment + sub-task deadlines). Import that file into Google Calendar, or fill the three OAuth keys to push via the Calendar API.
+With all three of `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, and `GOOGLE_OAUTH_REFRESH_TOKEN`, this pushes assignment due dates, lab slots, and test dates to Google Calendar (`GOOGLE_CALENDAR_ID`, default `primary`). If any credential is missing, or the API call fails, it writes `data/calendar/school-secretary.ics` instead. Secrets are never printed in errors or Telegram replies.
+
+---
+
+## Cloud VPS (Docker)
+
+The image runs the Telegram daemon and a scheduled **`ingest --raw`** loop. It does **not** install Chromium. Queen's Duo / headed `login` and `ingest --live` stay on **WSL or a desktop**.
+
+On the VPS:
+
+```bash
+cp .env.example .env
+# set ANTHROPIC_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+# optional: GOOGLE_OAUTH_CLIENT_ID / SECRET / REFRESH_TOKEN
+
+docker compose up -d
+```
+
+- `telegram` — polls Telegram 24/7 (`ANTHROPIC_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` are bound)
+- `ingest-cron` — every 6 hours: `ingest --raw`, `calendar-sync`, `session-health` (no `--live`)
+
+Copy a `data/` tree from your WSL machine onto the `secretary-data` volume if you want live SQLite/Chroma on the VPS. Seed once with fixtures if you only need the demo:
+
+```bash
+docker compose run --rm ingest-cron uv run school-secretary ingest --fixtures
+```
 
 ---
 
 ## WhatsApp (Telegram stays primary)
 
-Same commands as Telegram: `/start` `/ask` `/briefing` `/evening` `/plan` `/scaffold` `/email` `/study` `/habits` `/calendar`.
+Same commands as Telegram: `/start` `/ask` `/briefing` `/evening` `/plan` `/scaffold` `/email` `/study` `/habits` `/calendar` `/done` `/snooze` `/streak` `/tasks`.
 
 ```bash
 uv run school-secretary whatsapp
@@ -306,7 +350,7 @@ Tools: `list_courses`, `list_assignments`, `list_announcements`, `query_syllabus
 
 ```
 src/school_secretary/
-  ingest/     Playwright session, Brightspace DOM/XHR ingest (no scripted LE/LP), fixture seed, JSON/HTML parser
+  ingest/     Playwright session, Brightspace DOM/XHR ingest (no scripted LE/LP), fixture seed, JSON/HTML parser, Duo/session guard
   db/         SQLAlchemy SQLite (courses, assignments, announcements, documents, habits, subtasks)
   rag/        PyMuPDF/docx → hashing embeddings → ChromaDB; LlamaIndex retriever + extractive QA
   agents/     triage, planner (from assignment + file text), drafting, persona, study-habit memory, orchestrator

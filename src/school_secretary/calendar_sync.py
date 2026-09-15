@@ -41,10 +41,44 @@ def _ics_dt(dt: datetime) -> str:
 def google_configured(settings: Settings | None = None) -> bool:
     settings = settings or get_settings()
     return bool(
-        settings.google_oauth_client_id
-        and settings.google_oauth_client_secret
-        and settings.google_oauth_refresh_token
+        (settings.google_oauth_client_id or "").strip()
+        and (settings.google_oauth_client_secret or "").strip()
+        and (settings.google_oauth_refresh_token or "").strip()
     )
+
+
+def google_client_loaded(settings: Settings | None = None) -> bool:
+    """True when client id+secret were loaded from .env (refresh token may still be missing)."""
+    settings = settings or get_settings()
+    return bool(
+        (settings.google_oauth_client_id or "").strip()
+        and (settings.google_oauth_client_secret or "").strip()
+    )
+
+
+def _event_duration(kind: str, assignment_type: str) -> timedelta:
+    blob = f"{kind} {assignment_type}".lower()
+    if any(word in blob for word in ("quiz", "exam", "midterm", "test")):
+        return timedelta(hours=2)
+    if "lab" in blob:
+        return timedelta(hours=1, minutes=30)
+    return timedelta(minutes=30)
+
+
+def _event_title(code: str, title: str, assignment_type: str, kind: str) -> str:
+    prefix = "Due"
+    atype = (assignment_type or "").lower()
+    if kind == "subtask":
+        prefix = "Step"
+    elif "quiz" in atype or "exam" in atype:
+        prefix = "Test"
+    elif "lab" in atype:
+        prefix = "Lab"
+    elif "essay" in atype:
+        prefix = "Essay"
+    elif "project" in (title or "").lower():
+        prefix = "Project"
+    return f"{prefix} · {code}: {title}"
 
 
 def _access_token(settings: Settings) -> str:
@@ -101,6 +135,7 @@ def _upsert_event(
     title: str,
     when: datetime,
     settings: Settings,
+    assignment_type: str = "other",
 ) -> CalendarEvent:
     row = (
         session.query(CalendarEvent)
@@ -108,7 +143,7 @@ def _upsert_event(
         .one_or_none()
     )
     start = _aware(when, settings)
-    end = start + timedelta(minutes=30)
+    end = start + _event_duration(kind, assignment_type)
     if row is None:
         row = CalendarEvent(
             source_kind=kind,
@@ -169,7 +204,12 @@ def sync_calendar(settings: Settings | None = None) -> dict[str, str | int]:
             asg_q = asg_q.filter(Assignment.course_id.in_(live_ids))
             task_q = task_q.join(Assignment).filter(Assignment.course_id.in_(live_ids))
         for assignment in asg_q.all():
-            title = f"{assignment.course.code}: {assignment.title}"
+            title = _event_title(
+                assignment.course.code,
+                assignment.title,
+                assignment.assignment_type,
+                "assignment",
+            )
             events.append(
                 _upsert_event(
                     session,
@@ -178,11 +218,17 @@ def sync_calendar(settings: Settings | None = None) -> dict[str, str | int]:
                     title=title,
                     when=assignment.due_at,
                     settings=settings,
+                    assignment_type=assignment.assignment_type,
                 )
             )
         for task in task_q.all():
             parent = task.assignment
-            title = f"{parent.course.code} step: {task.title}"
+            title = _event_title(
+                parent.course.code,
+                task.title,
+                parent.assignment_type,
+                "subtask",
+            )
             events.append(
                 _upsert_event(
                     session,
@@ -191,6 +237,7 @@ def sync_calendar(settings: Settings | None = None) -> dict[str, str | int]:
                     title=title,
                     when=task.due_at,
                     settings=settings,
+                    assignment_type=parent.assignment_type,
                 )
             )
         session.flush()
@@ -205,14 +252,16 @@ def sync_calendar(settings: Settings | None = None) -> dict[str, str | int]:
                     event.last_error = ""
                     event.synced_at = now
                 transport = "google"
-            except Exception as exc:
-                error = str(exc)
+            except Exception:
+                error = "Google Calendar push failed; wrote a local calendar file instead."
                 transport = "ics"
                 for event in events:
                     event.transport = "ics"
-                    event.last_error = error[:500]
+                    event.last_error = error
                     event.synced_at = now
         else:
+            if google_client_loaded(settings):
+                error = "Google OAuth client is set; add GOOGLE_OAUTH_REFRESH_TOKEN to auto-push."
             for event in events:
                 event.transport = "ics"
                 event.last_error = ""

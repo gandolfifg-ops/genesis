@@ -1,0 +1,53 @@
+# Production-ish stack for a VPS (DigitalOcean / AWS / Render).
+# Telegram + ingest --raw only. Headed onQ login and Duo stay on WSL or a desktop
+# (school-secretary login, then a headed live ingest). This file never launches Chromium.
+# Copy the resulting data/ tree onto the VPS volume if you want the daemon to use live SQLite.
+
+services:
+  telegram:
+    build: .
+    command: ["uv", "run", "school-secretary", "telegram"]
+    env_file:
+      - .env
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
+      GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
+      GOOGLE_OAUTH_REFRESH_TOKEN: ${GOOGLE_OAUTH_REFRESH_TOKEN:-}
+      SCHOOL_SECRETARY_DATA_DIR: /app/data
+    volumes:
+      - secretary-data:/app/data
+    restart: unless-stopped
+
+  ingest-cron:
+    build: .
+    command:
+      - sh
+      - -c
+      - |
+        while true; do
+          uv run school-secretary ingest --raw
+          uv run school-secretary calendar-sync
+          uv run school-secretary session-health
+          sleep 21600
+        done
+    env_file:
+      - .env
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
+      GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
+      GOOGLE_OAUTH_REFRESH_TOKEN: ${GOOGLE_OAUTH_REFRESH_TOKEN:-}
+      SCHOOL_SECRETARY_DATA_DIR: /app/data
+    volumes:
+      - secretary-data:/app/data
+    restart: unless-stopped
+    depends_on:
+      - telegram
+
+volumes:
+  secretary-data:

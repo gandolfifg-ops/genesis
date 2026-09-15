@@ -152,7 +152,7 @@ def route_locally(text: str, settings: Settings) -> str:
         return (
             "**My School Secretary** is on.\n\n"
             "Commands: `/ask` `/briefing` `/evening` `/plan` `/scaffold` "
-            "`/email` `/study` `/habits` `/calendar`\n\n"
+            "`/email` `/study` `/habits` `/calendar` `/done` `/snooze` `/streak` `/tasks`\n\n"
             "I never complete assignments — outlines and TODOs only."
         )
     if lower.startswith("/ask"):
@@ -179,11 +179,24 @@ def route_locally(text: str, settings: Settings) -> str:
         return polish_outgoing(
             f"Calendar updated — **{result['events']}** deadlines via {result['transport']}.{extra}"
         )
-    if lower.startswith("/habits") or lower in {"habits", "streak"}:
-        from school_secretary.agents.memory import format_habit_summary, suggested_block
+    if lower.startswith("/habits") or lower in {"habits", "streak", "/streak"}:
+        from school_secretary.agents.tasks import format_streak
 
-        with session_scope(settings) as session:
-            return format_habit_summary(session) + "\n" + suggested_block(session)
+        return format_streak(settings)
+    if lower.startswith("/tasks") or lower == "tasks":
+        from school_secretary.agents.tasks import format_task_list
+
+        return format_task_list(settings)
+    if lower.startswith("/done") or lower.startswith("done "):
+        from school_secretary.agents.tasks import mark_done
+
+        target = re.sub(r"^/?done\s*", "", stripped, flags=re.I)
+        return mark_done(settings, target)
+    if lower.startswith("/snooze") or lower.startswith("snooze "):
+        from school_secretary.agents.tasks import snooze_task
+
+        target = re.sub(r"^/?snooze\s*", "", stripped, flags=re.I)
+        return snooze_task(settings, target)
     if lower.startswith("/study") or lower.startswith("study "):
         parts = stripped.split()
         minutes = 30
@@ -206,8 +219,8 @@ def handle_user_text(text: str, settings: Settings) -> str:
     lower = stripped.lower()
     if (
         lower.startswith("/")
-        or lower in {"help", "start", "briefing", "morning", "evening", "habits", "calendar", "streak"}
-        or lower.startswith(("plan ", "email", "scaffold", "study "))
+        or lower in {"help", "start", "briefing", "morning", "evening", "habits", "calendar", "streak", "tasks"}
+        or lower.startswith(("plan ", "email", "scaffold", "study ", "done ", "snooze "))
         or "briefing" in lower
         or "wrap" in lower
     ):

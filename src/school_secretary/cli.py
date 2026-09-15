@@ -232,6 +232,19 @@ def status() -> None:
             print("SQLite has schema but no courses. Run `login` or `ingest --live` on WSL (headed), or `ingest --fixtures`.")
 
 
+@app.command("session-health")
+def session_health_cmd() -> None:
+    """Check onQ session age / last live ingest (no cookie values). Optionally Telegram-alerts."""
+    from school_secretary.ingest.session_guard import inspect_session, maybe_alert_session
+
+    settings = get_settings()
+    report = inspect_session(settings)
+    print({"status": report["status"], "reason": report["reason"], "has_session_file": report["has_session_file"]})
+    warning = maybe_alert_session(settings)
+    if warning:
+        print("Telegram warning queued (if TELEGRAM_BOT_TOKEN and chat id are set).")
+
+
 @app.command("index-docs")
 def index_docs() -> None:
     """Re-embed documents into ChromaDB."""

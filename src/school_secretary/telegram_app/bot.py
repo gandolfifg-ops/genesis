@@ -34,15 +34,35 @@ def _target_chat_id(settings: Settings) -> str:
     return load_chat_id(settings.telegram_chat_id_path, settings.telegram_chat_id)
 
 
-async def _reply(update, text: str) -> None:
+async def _reply(update, text: str, reply_markup=None) -> None:
     body = (text or "")[:4000]
+    kwargs = {}
+    if reply_markup is not None:
+        kwargs["reply_markup"] = reply_markup
+    message = update.effective_message or getattr(update, "message", None)
+    if message is None:
+        return
     try:
-        await update.message.reply_text(body, parse_mode="Markdown")
+        await message.reply_text(body, parse_mode="Markdown", **kwargs)
     except Exception:
         try:
-            await update.message.reply_text(body)
+            await message.reply_text(body, **kwargs)
         except Exception:
             return
+
+
+def _task_markup(settings: Settings):
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    from school_secretary.agents.tasks import list_open_tasks, task_keyboard_rows
+    from school_secretary.db.session import session_scope
+
+    with session_scope(settings) as session:
+        ids = [task.id for task in list_open_tasks(session)]
+    rows = task_keyboard_rows(ids)
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton(label, callback_data=data) for label, data in row] for row in rows]
+    )
 
 
 async def _cmd_start(update, context) -> None:
@@ -53,7 +73,7 @@ async def _cmd_start(update, context) -> None:
         update,
         "**My School Secretary** is on.\n\n"
         "Commands: `/ask` `/briefing` `/evening` `/plan` `/scaffold` "
-        "`/email` `/study` `/habits` `/calendar`\n\n"
+        "`/email` `/study` `/habits` `/calendar` `/done` `/snooze` `/streak` `/tasks`\n\n"
         "Free-text questions go through RAG. I will never complete assignments — outlines and TODOs only.",
     )
 
@@ -107,7 +127,61 @@ async def _cmd_calendar(update, context) -> None:
 
 async def _cmd_habits(update, context) -> None:
     settings: Settings = context.bot_data["settings"]
-    await _reply(update, handle_user_text("/habits", settings))
+    await _reply(update, handle_user_text("/habits", settings), reply_markup=_task_markup(settings))
+
+
+async def _cmd_done(update, context) -> None:
+    settings: Settings = context.bot_data["settings"]
+    target = " ".join(context.args)
+    await _reply(update, handle_user_text(f"/done {target}", settings), reply_markup=_task_markup(settings))
+
+
+async def _cmd_snooze(update, context) -> None:
+    settings: Settings = context.bot_data["settings"]
+    target = " ".join(context.args)
+    await _reply(update, handle_user_text(f"/snooze {target}", settings), reply_markup=_task_markup(settings))
+
+
+async def _cmd_streak(update, context) -> None:
+    settings: Settings = context.bot_data["settings"]
+    await _reply(update, handle_user_text("/streak", settings), reply_markup=_task_markup(settings))
+
+
+async def _cmd_tasks(update, context) -> None:
+    settings: Settings = context.bot_data["settings"]
+    await _reply(update, handle_user_text("/tasks", settings), reply_markup=_task_markup(settings))
+
+
+async def _on_callback(update, context) -> None:
+    query = update.callback_query
+    if query is None or not query.data:
+        return
+    settings: Settings = context.bot_data["settings"]
+    data = query.data
+    try:
+        await query.answer()
+    except Exception:
+        pass
+    if data.startswith("done:"):
+        text = handle_user_text(f"/done {data.split(':', 1)[1]}", settings)
+    elif data.startswith("snooze:"):
+        text = handle_user_text(f"/snooze {data.split(':', 1)[1]}", settings)
+    elif data == "streak":
+        text = handle_user_text("/streak", settings)
+    elif data.startswith("study:"):
+        minutes = data.split(":", 1)[1]
+        text = handle_user_text(f"/study {minutes}", settings)
+    else:
+        text = handle_user_text("/tasks", settings)
+    markup = _task_markup(settings)
+    body = (text or "")[:4000]
+    try:
+        await query.edit_message_text(body, parse_mode="Markdown", reply_markup=markup)
+    except Exception:
+        try:
+            await query.edit_message_text(body, reply_markup=markup)
+        except Exception:
+            await _reply(update, body, reply_markup=markup)
 
 
 async def _on_text(update, context) -> None:
@@ -127,17 +201,20 @@ async def _on_error(update, context) -> None:
         await _reply(update, "Something went wrong on my side. Try that again in a moment.")
 
 
-async def _send_chat(context, text: str) -> None:
+async def _send_chat(context, text: str, reply_markup=None) -> None:
     settings: Settings = context.bot_data["settings"]
     chat_id = _target_chat_id(settings)
     if not chat_id or not text:
         return
     body = text[:4000]
+    kwargs = {}
+    if reply_markup is not None:
+        kwargs["reply_markup"] = reply_markup
     try:
-        await context.bot.send_message(chat_id=int(chat_id), text=body, parse_mode="Markdown")
+        await context.bot.send_message(chat_id=int(chat_id), text=body, parse_mode="Markdown", **kwargs)
     except Exception:
         try:
-            await context.bot.send_message(chat_id=int(chat_id), text=body)
+            await context.bot.send_message(chat_id=int(chat_id), text=body, **kwargs)
         except Exception:
             return
 
@@ -151,7 +228,14 @@ async def _job_deadline_alerts(context) -> None:
     settings: Settings = context.bot_data["settings"]
     text = format_deadline_alert(settings)
     if text:
-        await _send_chat(context, text)
+        await _send_chat(context, text, reply_markup=_task_markup(settings))
+
+
+async def _job_session_guard(context) -> None:
+    settings: Settings = context.bot_data["settings"]
+    from school_secretary.ingest.session_guard import maybe_alert_session
+
+    maybe_alert_session(settings)
 
 
 def run_bot(settings: Settings | None = None) -> None:
@@ -161,7 +245,7 @@ def run_bot(settings: Settings | None = None) -> None:
         print(MISSING_TOKEN, file=sys.stderr)
         raise SystemExit(1)
 
-    from telegram.ext import Application, CommandHandler, MessageHandler, filters
+    from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, filters
 
     tz = ZoneInfo(settings.timezone)
     application = Application.builder().token(token).build()
@@ -177,6 +261,11 @@ def run_bot(settings: Settings | None = None) -> None:
     application.add_handler(CommandHandler("study", _cmd_study))
     application.add_handler(CommandHandler("calendar", _cmd_calendar))
     application.add_handler(CommandHandler("habits", _cmd_habits))
+    application.add_handler(CommandHandler("done", _cmd_done))
+    application.add_handler(CommandHandler("snooze", _cmd_snooze))
+    application.add_handler(CommandHandler("streak", _cmd_streak))
+    application.add_handler(CommandHandler("tasks", _cmd_tasks))
+    application.add_handler(CallbackQueryHandler(_on_callback))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _on_text))
     application.add_error_handler(_on_error)
 
@@ -194,6 +283,9 @@ def run_bot(settings: Settings | None = None) -> None:
         async def deadline_job(ctx) -> None:
             await _job_deadline_alerts(ctx)
 
+        async def session_job(ctx) -> None:
+            await _job_session_guard(ctx)
+
         jobs.run_daily(
             morning_job,
             time=dt_time(8, 0, tzinfo=tz),
@@ -210,14 +302,20 @@ def run_bot(settings: Settings | None = None) -> None:
             first=30,
             name="deadline-24h",
         )
-        print("Scheduled 08:00 briefing, 20:00 check-in, and hourly 24h deadline alerts (America/Toronto).")
+        jobs.run_repeating(
+            session_job,
+            interval=6 * 3600,
+            first=90,
+            name="session-guard",
+        )
+        print("Scheduled 08:00 briefing, 20:00 check-in, hourly 24h alerts, and session-guard (America/Toronto).")
 
     print("Polling Telegram (auto-reconnect). Ctrl+C to stop.")
     backoff = 4
     while True:
         try:
             application.run_polling(
-                allowed_updates=["message"],
+                allowed_updates=["message", "callback_query"],
                 drop_pending_updates=False,
                 bootstrap_retries=5,
             )

@@ -556,7 +556,7 @@ async def _goto_html(page, url: str, *, wait: str = "domcontentloaded") -> bool:
         if "/d2l/" not in landed:
             return False
     landed = (page.url or "").lower()
-    if any(part in landed for part in ("login", "adfs", "microsoftonline")):
+    if any(part in landed for part in ("login", "adfs", "microsoftonline", "duo")):
         return False
     try:
         await page.wait_for_load_state("networkidle", timeout=20_000)
@@ -1007,6 +1007,9 @@ def complete_live_ingest(
     counts["indexed"] = indexed
     counts["planned"] = planned
     counts["calendar_events"] = int(calendar.get("events") or 0)
+    from school_secretary.ingest.session_guard import record_ingest_success
+
+    record_ingest_success(settings, live=True)
     return counts
 
 
@@ -1057,7 +1060,7 @@ async def ingest_live_from_context(settings: Settings, context, page) -> dict[st
         if "/d2l/home" not in landed:
             raise IngestError(f"{SESSION_EXPIRED} (could not open onQ home)") from exc
     landed = (page.url or "").lower()
-    if any(part in landed for part in ("login", "adfs", "microsoftonline")):
+    if any(part in landed for part in ("login", "adfs", "microsoftonline", "duo")):
         raise IngestError(f"{SESSION_EXPIRED} (landed on a login page)")
     await _click_view_all_courses(page)
     try:
@@ -1127,25 +1130,29 @@ def ingest_live(settings: Settings | None = None, *, headed: bool = True) -> dic
 
 async def _ingest_live_async(settings: Settings, *, headed: bool = True) -> dict[str, int]:
     from school_secretary.ingest.browser import _open_persistent_context
-
-    if not settings.session_path.exists():
-        raise IngestError(
-            f"Missing {settings.storage_state_path}. "
-            "Run `uv run school-secretary login` first (NetID, password, Duo). "
-            "Live ingest reuses data/browser/ in a headed window (headless=False)."
-        )
+    from school_secretary.ingest.session_guard import maybe_alert_session, record_ingest_failure
 
     # headless=False by default: headed TLS/session cookies fail under headless Chromium.
     headless = False if headed else True
     playwright = None
     context = None
     try:
+        if not settings.session_path.exists():
+            raise IngestError(
+                f"Missing {settings.storage_state_path}. "
+                "Run `uv run school-secretary login` first (NetID, password, Duo). "
+                "Live ingest reuses data/browser/ in a headed window (headless=False)."
+            )
         try:
             playwright, context = await _open_persistent_context(settings, headless=headless)
         except FileNotFoundError as exc:
             raise IngestError(str(exc)) from None
         page = context.pages[0] if context.pages else await context.new_page()
         return await ingest_live_from_context(settings, context, page)
+    except IngestError as exc:
+        record_ingest_failure(settings, str(exc))
+        maybe_alert_session(settings)
+        raise
     finally:
         if context is not None:
             await context.close()
