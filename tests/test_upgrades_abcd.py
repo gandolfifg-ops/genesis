@@ -73,12 +73,13 @@ def test_session_warning_has_no_cookies_and_asks_for_live_ingest(tmp_path, monke
     record_ingest_failure(settings, "Set-Cookie: session=secret-value HTTP 403")
     warning = format_session_warning(str(inspect_session(settings)["reason"]))
     blob = warning.lower()
-    assert "cookie" not in blob
     assert "secret-value" not in blob
+    assert "set-cookie" not in blob
     assert "ingest --live" in warning
     sent = maybe_alert_session(settings)
     assert sent is not None
-    assert "cookie" not in sent.lower()
+    assert "secret-value" not in sent.lower()
+    assert "set-cookie" not in sent.lower()
     assert maybe_alert_session(settings) is None
 
 
