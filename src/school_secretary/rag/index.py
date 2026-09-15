@@ -122,7 +122,11 @@ def index_documents(settings: Settings | None = None, force: bool = False) -> in
     indexed = 0
     with session_scope(settings) as session:
         rows = session.query(Document).all()
-        to_index = [row for row in rows if force or not row.indexed]
+        to_index = [
+            row
+            for row in rows
+            if (force or not row.indexed) and row.doc_type != "clutter"
+        ]
         _upsert_nodes(collection, documents_to_nodes(to_index))
         _upsert_nodes(collection, sql_row_nodes(session))
         for row in to_index:

@@ -187,6 +187,66 @@ def test_briefing_lists_next_steps_and_does_not_inflate_streak(tmp_path, monkeyp
     assert reads == 2
 
 
+def test_deadline_alert_lists_next_24h_once(tmp_path, monkeypatch):
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    from school_secretary.agents.orchestrator import format_deadline_alert
+    from school_secretary.db.models import Assignment, Course
+
+    settings = _iso(tmp_path, monkeypatch)
+    init_db(settings)
+    tz = ZoneInfo("America/Toronto")
+    now = datetime(2026, 9, 14, 12, 0, tzinfo=tz)
+    with session_scope(settings) as session:
+        course = Course(org_unit_id="due", code="CISC 235", name="DS", term="F26")
+        session.add(course)
+        session.flush()
+        session.add(
+            Assignment(
+                course_id=course.id,
+                d2l_id="soon",
+                title="Lab 2",
+                due_at=now + timedelta(hours=8),
+                assignment_type="coding_lab",
+            )
+        )
+        session.add(
+            Assignment(
+                course_id=course.id,
+                d2l_id="later",
+                title="Essay 1",
+                due_at=now + timedelta(days=10),
+                assignment_type="essay",
+            )
+        )
+    first = format_deadline_alert(settings, now=now)
+    assert first is not None
+    assert "Lab 2" in first
+    assert "Essay 1" not in first
+    assert "/workspace" not in first
+    second = format_deadline_alert(settings, now=now)
+    assert second is None
+
+
+def test_telegram_daemon_reconnects_and_schedules_alerts():
+    from pathlib import Path
+
+    text = Path("src/school_secretary/telegram_app/bot.py").read_text(encoding="utf-8")
+    assert "bootstrap_retries" in text
+    assert "retrying in" in text
+    assert "deadline-24h" in text
+    assert "morning-briefing" in text
+    assert "evening-wrapup" in text
+    assert 'parse_mode="Markdown"' in text
+    env = Path(".env.example").read_text(encoding="utf-8")
+    assert "ANTHROPIC_API_KEY" in env
+    assert "TELEGRAM_BOT_TOKEN" in env
+    llm = Path("src/school_secretary/agents/llm.py").read_text(encoding="utf-8")
+    assert "_complete_anthropic" in llm
+    assert "anthropic_api_key" in llm
+
+
 def test_planner_keeps_completed_subtasks(tmp_path, monkeypatch):
     from datetime import datetime
     from zoneinfo import ZoneInfo

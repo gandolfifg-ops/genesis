@@ -93,7 +93,8 @@ def test_live_ingest_source_does_not_use_httpx_or_scripted_api():
     assert "index_documents" in text
     assert "ingest_raw" in text
     assert "download_page_files" in text
-    assert "is_noisy_assignment_title" in text
+    assert "is_target_content_topic" in text
+    assert "is_target_assignment" in text
 
 
 def test_live_ingest_opens_onq_home_networkidle_before_scrape():
@@ -167,6 +168,7 @@ def test_ingest_live_defaults_headed_and_reuses_persistent_context():
     assert "headless=False" in browser
     assert "accept_downloads=True" in browser
     assert "download_page_files" in browser
+    assert "strict" in browser
     assert "data/browser" in browser or "browser_profile_dir" in browser
 
     cli = Path("src/school_secretary/cli.py").read_text(encoding="utf-8")
@@ -316,6 +318,7 @@ def test_ingest_skips_noisy_dropbox_titles_and_keeps_due_dates(tmp_path, monkeyp
             "999002": [
                 dropbox_from_dom("Not Submitted", None, "", "noise-1"),
                 dropbox_from_dom("1 Submission, 1 File", None, "", "noise-2"),
+                dropbox_from_dom("Problem Set 3", "2026-10-01T23:59:00Z", "Homework worksheet", "pset-1"),
                 dropbox_from_dom(
                     "Lab 3 — Orthographic CAD",
                     None,

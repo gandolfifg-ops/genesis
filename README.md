@@ -60,10 +60,11 @@ Variable names (exact):
 
 | Name | Required? | Used by |
 | --- | --- | --- |
-| `TELEGRAM_BOT_TOKEN` | only for `school-secretary telegram` | python-telegram-bot |
-| `TELEGRAM_CHAT_ID` | optional | proactive 8:00 / 20:00 briefings if you never sent `/start` |
-| `OPENAI_API_KEY` | optional | function calling + richer RAG synthesis |
-| `ANTHROPIC_API_KEY` | optional | reserved; OpenAI is used if keyed, otherwise local/mock |
+| `TELEGRAM_BOT_TOKEN` | only for `school-secretary telegram` | python-telegram-bot (loaded from `.env`) |
+| `TELEGRAM_CHAT_ID` | optional | proactive 08:00 / 20:00 / 24h deadline pushes if you never sent `/start` |
+| `ANTHROPIC_API_KEY` | optional, **preferred** | Claude for `/ask`, `/briefing`, and daily planning |
+| `ANTHROPIC_MODEL` | optional, default `claude-sonnet-4-5` | Anthropic model id |
+| `OPENAI_API_KEY` | optional | used only if Anthropic is unset |
 | `OPENAI_MODEL` | optional, default `gpt-4o-mini` | OpenAI model id |
 | `ONQ_BASE_URL` | optional, default `https://onq.queensu.ca` | live ingest |
 | `MCP_HOST` / `MCP_PORT` | optional, default `127.0.0.1` / `43147` | MCP HTTP bind |
@@ -76,7 +77,7 @@ Variable names (exact):
 | `WHATSAPP_VERIFY_TOKEN` | optional | webhook verify token |
 | `WHATSAPP_WEBHOOK_HOST` / `WHATSAPP_WEBHOOK_PORT` | optional, default `127.0.0.1` / `43148` | WhatsApp webhook bind |
 
-If OpenAI is unset, agents use extractive RAG + templates. If Telegram is unset, `telegram` exits with the setup text below; everything else still runs.
+If `ANTHROPIC_API_KEY` is set, Claude writes `/ask`, briefings, and plans. Else `OPENAI_API_KEY`. If both are empty, agents use extractive RAG + templates. Keys are loaded from `.env` and never printed. If Telegram is unset, `telegram` exits with the setup text below; everything else still runs.
 
 ---
 
@@ -128,10 +129,13 @@ uv run school-secretary telegram
 
 Without a token you should see a stderr message that starts with `TELEGRAM_BOT_TOKEN is not set` and the process exits `1`.
 
-With a token the process polls Telegram and prints that it scheduled:
+With a token the process polls Telegram (auto-reconnect on errors) and schedules:
 
 - morning briefing **08:00 America/Toronto**
-- evening wrap-up **20:00 America/Toronto**
+- evening check-in **20:00 America/Toronto**
+- hourly **24-hour deadline alerts** to `TELEGRAM_CHAT_ID` or `data/telegram_chat_id.txt`
+
+Leave it running (`uv run school-secretary telegram`); no manual babysitting. Replies use Markdown and strip source filenames and local paths.
 
 Commands: `/start` `/help` `/ask` `/briefing` `/evening` `/plan` `/scaffold` `/email` `/study` `/habits` `/calendar` plus free-text questions.
 
@@ -194,7 +198,7 @@ uv run school-secretary login
 2. It goes to the Queen’s onQ login at **`https://onq.queensu.ca/d2l/home`**.
 3. Type your **NetID** and **password**, then approve **Duo MFA**.
 4. When you reach the **onQ homepage** (course tiles / Brightspace navbar), leave the window open, switch back to the **WSL terminal**, and **press Enter**.
-5. The same headed window then walks **every course**: content modules, announcement pages, and dropbox/assignment detail pages (not homepage tiles only). It clicks downloads for PDF, docx, and other files into `data/raw/{orgUnitId}/`, reads due dates and descriptions from those pages, upserts SQLite, parses PDFs/docx, embeds into Chroma, replans subtasks, and refreshes the calendar. Chromium closes when that finishes. **You do not download PDFs yourself.**
+5. The same headed window then walks **every course**, but only **targeted** material: announcements, assignment/project dropboxes, labs, quizzes, tests, syllabi, and items with explicit due dates. Residence contracts, general reading PDFs, and homework problem sets are skipped. It clicks downloads for matching PDF/docx files into `data/raw/{orgUnitId}/`, upserts SQLite, parses, embeds, replans, and refreshes the calendar. **You do not download PDFs yourself.**
 
 **Where the session is saved**
 

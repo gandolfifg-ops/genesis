@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import sys
-from datetime import time
+import time
+from datetime import time as dt_time
 from zoneinfo import ZoneInfo
 
-from school_secretary.agents.orchestrator import render_briefing
+from school_secretary.agents.orchestrator import format_deadline_alert, render_briefing
 from school_secretary.config import Settings, get_settings
 from school_secretary.telegram_app.handlers import handle_user_text, load_chat_id, remember_chat_id
 
@@ -38,7 +39,10 @@ async def _reply(update, text: str) -> None:
     try:
         await update.message.reply_text(body, parse_mode="Markdown")
     except Exception:
-        await update.message.reply_text(body)
+        try:
+            await update.message.reply_text(body)
+        except Exception:
+            return
 
 
 async def _cmd_start(update, context) -> None:
@@ -117,16 +121,37 @@ async def _on_text(update, context) -> None:
     await _reply(update, handle_user_text(update.message.text, settings))
 
 
-async def _job_briefing(context, kind: str) -> None:
+async def _on_error(update, context) -> None:
+    print("Telegram handler error; continuing to poll.", file=sys.stderr)
+    if update and getattr(update, "message", None):
+        await _reply(update, "Something went wrong on my side. Try that again in a moment.")
+
+
+async def _send_chat(context, text: str) -> None:
     settings: Settings = context.bot_data["settings"]
     chat_id = _target_chat_id(settings)
-    if not chat_id:
+    if not chat_id or not text:
         return
-    text = render_briefing(kind, settings=settings)[:4000]
+    body = text[:4000]
     try:
-        await context.bot.send_message(chat_id=int(chat_id), text=text, parse_mode="Markdown")
+        await context.bot.send_message(chat_id=int(chat_id), text=body, parse_mode="Markdown")
     except Exception:
-        await context.bot.send_message(chat_id=int(chat_id), text=text)
+        try:
+            await context.bot.send_message(chat_id=int(chat_id), text=body)
+        except Exception:
+            return
+
+
+async def _job_briefing(context, kind: str) -> None:
+    settings: Settings = context.bot_data["settings"]
+    await _send_chat(context, render_briefing(kind, settings=settings))
+
+
+async def _job_deadline_alerts(context) -> None:
+    settings: Settings = context.bot_data["settings"]
+    text = format_deadline_alert(settings)
+    if text:
+        await _send_chat(context, text)
 
 
 def run_bot(settings: Settings | None = None) -> None:
@@ -153,6 +178,7 @@ def run_bot(settings: Settings | None = None) -> None:
     application.add_handler(CommandHandler("calendar", _cmd_calendar))
     application.add_handler(CommandHandler("habits", _cmd_habits))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _on_text))
+    application.add_error_handler(_on_error)
 
     jobs = application.job_queue
     if jobs is None:
@@ -165,17 +191,42 @@ def run_bot(settings: Settings | None = None) -> None:
         async def evening_job(ctx) -> None:
             await _job_briefing(ctx, "evening")
 
+        async def deadline_job(ctx) -> None:
+            await _job_deadline_alerts(ctx)
+
         jobs.run_daily(
             morning_job,
-            time=time(8, 0, tzinfo=tz),
+            time=dt_time(8, 0, tzinfo=tz),
             name="morning-briefing",
         )
         jobs.run_daily(
             evening_job,
-            time=time(20, 0, tzinfo=tz),
+            time=dt_time(20, 0, tzinfo=tz),
             name="evening-wrapup",
         )
-        print("Scheduled morning briefing 08:00 and evening wrap-up 20:00 America/Toronto.")
+        jobs.run_repeating(
+            deadline_job,
+            interval=3600,
+            first=30,
+            name="deadline-24h",
+        )
+        print("Scheduled 08:00 briefing, 20:00 check-in, and hourly 24h deadline alerts (America/Toronto).")
 
-    print("Polling Telegram. Ctrl+C to stop.")
-    application.run_polling(allowed_updates=["message"])
+    print("Polling Telegram (auto-reconnect). Ctrl+C to stop.")
+    backoff = 4
+    while True:
+        try:
+            application.run_polling(
+                allowed_updates=["message"],
+                drop_pending_updates=False,
+                bootstrap_retries=5,
+            )
+            break
+        except KeyboardInterrupt:
+            raise
+        except SystemExit:
+            raise
+        except Exception:
+            print(f"Telegram disconnected; retrying in {backoff}s.", file=sys.stderr)
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 60)

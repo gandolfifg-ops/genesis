@@ -21,7 +21,12 @@ from school_secretary.db.session import session_scope
 from school_secretary.ingest.parser import (
     classify_document,
     extract_due_from_text,
+    is_clutter_material,
     is_noisy_assignment_title,
+    is_target_announcement,
+    is_target_assignment,
+    is_target_content_topic,
+    is_target_material,
     parse_dropbox_item,
     parse_enrollment_item,
     parse_news_item,
@@ -153,6 +158,12 @@ def upsert_document(
     if not text and path.suffix.lower() not in {".pdf", ".docx"}:
         text = path.read_text(encoding="utf-8", errors="ignore") if path.is_file() else ""
     kind = doc_type or classify_document(filename, text)
+    if kind == "clutter" and assignment is None:
+        return None
+    if assignment is None and kind == "handout" and not is_target_material(
+        filename, text, filename, has_due=extract_due_from_text(text) is not None
+    ):
+        return None
     if row is None:
         row = Document(
             course_id=course.id,
@@ -193,6 +204,8 @@ def ingest_payloads(
             news_path = write_raw_json(raw_dir / "news.json", news_items)
             for item in news_items:
                 parsed = parse_news_item(item)
+                if not is_target_announcement(parsed.get("title"), parsed.get("body") or ""):
+                    continue
                 upsert_announcement(session, course, parsed, str(news_path))
                 for attachment in parsed["attachments"]:
                     dest = _resolve_attachment(attachment, attachment_files, raw_dir)
@@ -204,6 +217,8 @@ def ingest_payloads(
             for item in dropbox_items:
                 parsed = parse_dropbox_item(item)
                 if is_noisy_assignment_title(parsed.get("title")):
+                    continue
+                if not is_target_assignment(parsed.get("title"), parsed.get("instructions") or "", parsed.get("due_at")):
                     continue
                 assignment = upsert_assignment(session, course, parsed, str(dropbox_path))
                 for attachment in parsed["attachments"]:
@@ -249,6 +264,8 @@ def _attach_loose_raw_files(session, settings: Settings) -> None:
                 ):
                     linked = assignment
                     break
+            if is_clutter_material(path.name, filename=path.name) and linked is None:
+                continue
             upsert_document(session, course, path, path.name, assignment=linked)
 
 
@@ -727,6 +744,8 @@ async def scrape_assignments_dom(page, org_id: str) -> list[dict[str, Any]]:
             row_text = title
         due_dt = extract_due_from_text(row_text)
         due = due_dt.isoformat() if due_dt else None
+        if not is_target_assignment(title, row_text, due_dt):
+            continue
         db_match = _DB_ID_RE.search(href)
         d2l_id = db_match.group(1) if db_match else _stable_id(org_id, title)
         instructions = row_text.replace(title, "", 1).strip()
@@ -736,6 +755,8 @@ async def scrape_assignments_dom(page, org_id: str) -> list[dict[str, Any]]:
     )
     for href, text in extra:
         if is_noisy_assignment_title(text):
+            continue
+        if not is_target_assignment(text, text, None):
             continue
         db_match = _DB_ID_RE.search(href)
         items.append(dropbox_from_dom(text, None, "", db_match.group(1) if db_match else _stable_id(org_id, text), href=href))
@@ -769,11 +790,11 @@ async def _expand_content_modules(page) -> None:
             continue
 
 
-async def _download_page_files(page, dest_dir: Path, limit: int = 20) -> dict[str, Path]:
+async def _download_page_files(page, dest_dir: Path, limit: int = 20, *, strict: bool = False) -> dict[str, Path]:
     from school_secretary.ingest.browser import download_page_files
 
     try:
-        return await download_page_files(page, dest_dir, limit=limit)
+        return await download_page_files(page, dest_dir, limit=limit, strict=strict)
     except Exception:
         return {}
 
@@ -827,6 +848,8 @@ async def scrape_assignment_detail(page, org_id: str, href: str, base: str) -> d
         title = ""
     if not title:
         return None
+    if not is_target_assignment(title, body, due_dt):
+        return None
     db_match = _DB_ID_RE.search(href) or _DB_ID_RE.search(page.url or "")
     d2l_id = db_match.group(1) if db_match else _stable_id(org_id, title)
     return dropbox_from_dom(
@@ -850,7 +873,7 @@ async def crawl_content_modules(page, org_id: str, base: str, dest_dir: Path) ->
         if not await _goto_html(page, url):
             continue
         await _expand_content_modules(page)
-        saved.update(await _download_page_files(page, dest_dir))
+        saved.update(await _download_page_files(page, dest_dir, strict=True))
         links = await _locator_count_text(
             page.locator(
                 "a[href*='viewContent'], a[href*='/topics/'], a[href*='content/viewer'], "
@@ -863,6 +886,8 @@ async def crawl_content_modules(page, org_id: str, base: str, dest_dir: Path) ->
                 continue
             if text.lower() in _SKIP_TITLES:
                 continue
+            if not is_target_content_topic(text):
+                continue
             abs_url = _abs_url(base, href)
             if org_id not in abs_url and f"ou={org_id}" not in abs_url:
                 continue
@@ -874,10 +899,10 @@ async def crawl_content_modules(page, org_id: str, base: str, dest_dir: Path) ->
             continue
         seen.add(href)
         unique.append(href)
-    for href in unique[:40]:
+    for href in unique[:20]:
         if not await _goto_html(page, href):
             continue
-        saved.update(await _download_page_files(page, dest_dir))
+        saved.update(await _download_page_files(page, dest_dir, strict=True))
     return saved
 
 
@@ -903,8 +928,15 @@ async def crawl_announcement_pages(
         body = await _visible_body_text(page)
         match = _NEWS_ID_RE.search(href)
         items.append(news_from_dom(heading, body or heading, match.group(1) if match else None))
-        saved.update(await _download_page_files(page, dest_dir, limit=10))
-    return _merge_named_items([], items), saved
+        saved.update(await _download_page_files(page, dest_dir, limit=10, strict=True))
+    kept = []
+    for item in _merge_named_items([], items):
+        title = str(item.get("Title") or "")
+        body_payload = item.get("Body") or ""
+        body = body_payload.get("Text") if isinstance(body_payload, dict) else str(body_payload)
+        if is_target_announcement(title, body or ""):
+            kept.append(item)
+    return kept, saved
 
 
 async def crawl_dropbox_pages(
@@ -922,11 +954,14 @@ async def crawl_dropbox_pages(
         if not await _goto_html(page, url):
             continue
         collected = _merge_named_items(collected, await scrape_assignments_dom(page, org_id))
-        saved.update(await _download_page_files(page, dest_dir))
+        saved.update(await _download_page_files(page, dest_dir, strict=True))
         for item in collected:
             href = item.get("Url") or ""
             name = item.get("Name") or ""
-            if href and not is_noisy_assignment_title(name):
+            instr = item.get("Instructions") or ""
+            if isinstance(instr, dict):
+                instr = instr.get("Text") or ""
+            if href and is_target_assignment(name, str(instr), item.get("DueDate")):
                 hrefs.append((_abs_url(base, href), name))
     seen: set[str] = set()
     for href, _name in hrefs:
@@ -939,7 +974,14 @@ async def crawl_dropbox_pages(
         saved.update(await _download_page_files(page, dest_dir, limit=12))
         if len(seen) >= 30:
             break
-    cleaned = [item for item in collected if not is_noisy_assignment_title(str(item.get("Name") or ""))]
+    cleaned = []
+    for item in collected:
+        name = str(item.get("Name") or "")
+        instr = item.get("Instructions") or ""
+        if isinstance(instr, dict):
+            instr = instr.get("Text") or ""
+        if is_target_assignment(name, str(instr), item.get("DueDate")):
+            cleaned.append(item)
     return cleaned, saved
 
 

@@ -5,10 +5,15 @@ from datetime import datetime, timezone
 from school_secretary.ingest.parser import (
     extract_due_from_text,
     infer_assignment_type,
+    is_clutter_material,
     is_noisy_assignment_title,
+    is_target_announcement,
+    is_target_assignment,
+    is_target_content_topic,
     parse_dropbox_item,
     parse_enrollment_item,
     parse_news_item,
+    should_download_file,
 )
 
 
@@ -51,6 +56,28 @@ def test_noisy_dropbox_status_titles_are_skipped():
     assert is_noisy_assignment_title("Dropbox")
     assert not is_noisy_assignment_title("Lab 2 — Binary Search Trees")
     assert not is_noisy_assignment_title("Assignment 1 CAD drawing")
+
+
+def test_clutter_filter_skips_residence_readings_and_psets():
+    assert is_clutter_material("Residence Contract 2026")
+    assert is_clutter_material("Week 4 Required Reading", filename="week4-reading.pdf")
+    assert is_clutter_material("Problem Set 3", filename="pset3.pdf")
+    assert is_clutter_material("Homework 4 worksheet")
+    assert not is_clutter_material("Lab 2 — Binary Search Trees")
+    assert not is_clutter_material("CISC 235 Syllabus")
+    assert not is_clutter_material("Quiz 2")
+    assert not is_target_assignment("Problem Set 3", "Due Friday", None)
+    assert is_target_assignment("Lab 2", "Implement BST", None)
+    assert is_target_assignment("Midterm", "", "2026-10-16")
+    assert is_target_content_topic("Syllabus")
+    assert is_target_content_topic("Lab 2 handout")
+    assert not is_target_content_topic("Week 3 Reading")
+    assert not is_target_content_topic("Residence Agreement")
+    assert is_target_announcement("Lab 1 deadline extended")
+    assert not is_target_announcement("Residence contract posted", "Sign your lease.")
+    assert should_download_file("cisc235-syllabus.pdf", strict=True)
+    assert not should_download_file("week4-reading.pdf", strict=True)
+    assert not should_download_file("pset3.pdf", "https://onq.example/pset3.pdf", strict=True)
 
 
 def test_essay_type_and_news():

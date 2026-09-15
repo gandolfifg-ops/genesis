@@ -162,8 +162,10 @@ async def click_and_save_download(page, locator, dest_dir: Path, timeout: int = 
         return None
 
 
-async def download_page_files(page, dest_dir: Path, limit: int = 20) -> dict[str, Path]:
+async def download_page_files(page, dest_dir: Path, limit: int = 20, *, strict: bool = False) -> dict[str, Path]:
     """Click in-page download/file links. Never uses a scripted API client."""
+    from school_secretary.ingest.parser import should_download_file
+
     dest_dir.mkdir(parents=True, exist_ok=True)
     saved: dict[str, Path] = {}
     selectors = [
@@ -192,8 +194,18 @@ async def download_page_files(page, dest_dir: Path, limit: int = 20) -> dict[str
         except Exception:
             continue
         for index in range(min(count, limit)):
-            path = await click_and_save_download(page, loc.nth(index), dest_dir)
+            el = loc.nth(index)
+            try:
+                label = " ".join(((await el.inner_text()) or "").split())
+                href = (await el.get_attribute("href")) or ""
+            except Exception:
+                label, href = "", ""
+            if not should_download_file(label, href, strict=strict):
+                continue
+            path = await click_and_save_download(page, el, dest_dir)
             if path is not None and path.exists():
+                if strict and not should_download_file(path.name, str(path), strict=True):
+                    continue
                 saved[path.name] = path
             if len(saved) >= limit:
                 return saved
@@ -202,6 +214,8 @@ async def download_page_files(page, dest_dir: Path, limit: int = 20) -> dict[str
         if "/d2l/api/le/" in link or "/d2l/api/lp/" in link:
             continue
         filename = sanitize_filename(link.rsplit("/", 1)[-1].split("?")[0] or "download.pdf")
+        if not should_download_file(filename, link, strict=strict):
+            continue
         dest = dest_dir / filename
         if dest.exists():
             saved[filename] = dest

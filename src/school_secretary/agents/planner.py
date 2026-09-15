@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy.orm import Session
 
 from school_secretary.agents.drafting import parse_rubric_weights
+from school_secretary.agents.llm import EXECUTIVE_SYSTEM, complete
 from school_secretary.agents.memory import course_minutes, habit_note_for_course
 from school_secretary.config import get_settings
 from school_secretary.db.models import Assignment, Document, SubTask
@@ -158,7 +159,46 @@ def steps_from_text(title: str, corpus: str, assignment_type: str = "other") -> 
         add(f"Complete {short} yourself (scaffolding only — you write the work)")
 
     add("Submit with a 24-hour buffer")
-    return steps[:8]
+    heuristic = steps[:8]
+    llm_steps = _steps_from_llm(title, corpus, assignment_type)
+    if len(llm_steps) >= 3:
+        merged: list[str] = []
+        seen_llm: set[str] = set()
+        for step in llm_steps + heuristic:
+            key = step.lower()
+            if key in seen_llm or any(filler in key for filler in GENERIC_FILLER):
+                continue
+            seen_llm.add(key)
+            merged.append(step)
+            if len(merged) >= 8:
+                break
+        return merged
+    return heuristic
+
+
+def _steps_from_llm(title: str, corpus: str, assignment_type: str) -> list[str]:
+    llm = complete(
+        EXECUTIVE_SYSTEM
+        + " List 4-8 specific actionable subtasks from the assignment title and file text. "
+        "Examples: 'Draft Section 1 problem statement', 'Complete CAD drawing for part A', "
+        "'Review rubric requirements'. One item per line. No generic 'read the instructions'. "
+        "Scaffolding only — never finished solutions.",
+        f"Title: {title}\nType: {assignment_type}\n\n{corpus[:6000]}",
+    )
+    if not llm:
+        return []
+    found: list[str] = []
+    for line in llm.splitlines():
+        compact = re.sub(r"^[\d]+[).:-]\s*", "", line).strip(" -•*")
+        compact = re.sub(r"\s+", " ", compact).strip()
+        if len(compact) < 8:
+            continue
+        if any(filler in compact.lower() for filler in GENERIC_FILLER):
+            continue
+        found.append(compact[:120])
+        if len(found) >= 8:
+            break
+    return found
 
 
 def plan_assignment(session: Session, assignment: Assignment, now: datetime | None = None) -> list[SubTask]:

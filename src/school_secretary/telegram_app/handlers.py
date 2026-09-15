@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
 
-from school_secretary.agents.llm import complete
 from school_secretary.agents.memory import record_study_session
 from school_secretary.agents.orchestrator import (
     ask,
@@ -204,47 +202,17 @@ def route_locally(text: str, settings: Settings) -> str:
 
 
 def handle_user_text(text: str, settings: Settings) -> str:
-    llm = complete(
-        system=(
-            "You are My School Secretary, an executive assistant for Queen's onQ. "
-            "Clean Markdown. Actionable. Never complete assignments. "
-            "Never mention local file paths or raw source filenames."
-        ),
-        user=text,
-    )
-    # complete() does not do tool calls by itself; use a dedicated OpenAI round-trip.
-    settings_key = settings.openai_api_key
-    if settings_key:
-        try:
-            from openai import OpenAI
-
-            client = OpenAI(api_key=settings_key)
-            response = client.chat.completions.create(
-                model=settings.openai_model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are My School Secretary. Use tools. Never finish assignments.",
-                    },
-                    {"role": "user", "content": text},
-                ],
-                tools=TOOLS,
-                temperature=0.2,
-            )
-            message = response.choices[0].message
-            if message.tool_calls:
-                outputs = []
-                for call in message.tool_calls:
-                    args = json.loads(call.function.arguments or "{}")
-                    outputs.append(dispatch_tool(call.function.name, args, settings))
-                return polish_outgoing("\n\n".join(outputs))
-            if message.content:
-                return polish_outgoing(message.content)
-        except Exception:
-            pass
-    if llm:
-        return polish_outgoing(llm)
-    return polish_outgoing(route_locally(text, settings))
+    stripped = (text or "").strip()
+    lower = stripped.lower()
+    if (
+        lower.startswith("/")
+        or lower in {"help", "start", "briefing", "morning", "evening", "habits", "calendar", "streak"}
+        or lower.startswith(("plan ", "email", "scaffold", "study "))
+        or "briefing" in lower
+        or "wrap" in lower
+    ):
+        return polish_outgoing(route_locally(stripped, settings))
+    return polish_outgoing(ask(stripped, settings=settings))
 
 
 def remember_chat_id(path: Path, chat_id: int) -> None:

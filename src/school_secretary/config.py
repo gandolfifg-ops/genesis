@@ -3,6 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
+from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -15,6 +16,7 @@ def repo_root() -> Path:
 
 
 ROOT = repo_root()
+load_dotenv(ROOT / ".env", override=False)
 
 
 class Settings(BaseSettings):
@@ -28,6 +30,7 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_model: str = "gpt-4o-mini"
     anthropic_api_key: str = ""
+    anthropic_model: str = "claude-sonnet-4-5"
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
     onq_base_url: str = "https://onq.queensu.ca"

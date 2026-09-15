@@ -29,8 +29,10 @@ def demo() -> None:
         scaffold_and_describe,
     )
     from school_secretary.ingest.fixtures import DEMO_NOW, ingest_fixtures
+    from school_secretary.agents.llm import active_llm_provider
 
     settings = get_settings()
+    print("LLM provider:", active_llm_provider(settings))
     print("== 1. Ingest fixture courses, announcements, PDFs, study habits ==")
     counts = ingest_fixtures(settings)
     print(counts)

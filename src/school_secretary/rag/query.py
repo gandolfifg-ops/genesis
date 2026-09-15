@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from llama_index.core.schema import NodeWithScore, QueryBundle, TextNode
 from sqlalchemy.orm import Session
 
-from school_secretary.agents.llm import complete
+from school_secretary.agents.llm import EXECUTIVE_SYSTEM, complete
 from school_secretary.config import Settings, get_settings
 from school_secretary.db.live import course_by_code
 from school_secretary.db.models import Course, Document
@@ -224,13 +224,13 @@ def answer_question(question: str, settings: Settings | None = None) -> str:
     )
     llm = complete(
         system=(
-            "You are My School Secretary, a Queen's onQ executive assistant. "
-            "Answer only from the provided syllabus/handout excerpts. "
-            "Clean Markdown. Name the course, never filenames, local paths, or '(Source: …)' labels. "
-            "If the excerpts do not contain the answer, say so. "
-            "Never write finished assignment solutions."
+            EXECUTIVE_SYSTEM
+            + " Answer only from the provided syllabus/handout excerpts. "
+            "Name the course, never filenames, local paths, or '(Source: …)' labels. "
+            "If the excerpts do not contain the answer, say so."
         ),
         user=f"Question: {question}\n\nExcerpts:\n{context}",
+        settings=settings,
     )
     from school_secretary.agents.persona import polish_outgoing
 

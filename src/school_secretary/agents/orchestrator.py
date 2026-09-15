@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy.orm import Session
 
 from school_secretary.agents.drafting import describe_scaffold, scaffold_assignment
+from school_secretary.agents.llm import EXECUTIVE_SYSTEM, complete
 from school_secretary.agents.memory import (
     format_habit_summary,
     record_study_session,
@@ -192,9 +193,19 @@ def render_briefing(kind: str, settings: Settings | None = None, now: datetime |
             lines += ["", "Wrap-up: log what you actually studied so tomorrow's plan is honest. /study CISC 235 45"]
         else:
             lines += ["", "Ask a syllabus question with /ask, or /plan the next lab. Scaffolding only — you write the work."]
+        facts = "\n".join(lines)
+        llm = complete(
+            EXECUTIVE_SYSTEM
+            + " Rewrite these notes as a tight executive briefing. Keep course codes, due times, "
+            "and the section headings Focus, Announcements, Coming due, "
+            + ("Open micro-deadlines" if kind == "evening" else "Next planned steps")
+            + ", Calendar. Do not invent deadlines.",
+            facts,
+            settings=settings,
+        )
         from school_secretary.agents.persona import polish_outgoing
 
-        return polish_outgoing("\n".join(lines))
+        return polish_outgoing(llm or facts)
 
 
 def ask(question: str, settings: Settings | None = None) -> str:
@@ -214,7 +225,17 @@ def plan_and_format(query: str, settings: Settings | None = None) -> str:
         if not assignment.subtasks:
             plan_assignment(session, assignment)
             session.refresh(assignment)
-        return format_plan(assignment)
+        rendered = format_plan(assignment)
+    llm = complete(
+        EXECUTIVE_SYSTEM
+        + " Polish this work plan into clean Markdown. Keep every subtask. "
+        "Do not add finished solutions or generic 'read the instructions' steps.",
+        rendered,
+        settings=settings,
+    )
+    from school_secretary.agents.persona import polish_outgoing
+
+    return polish_outgoing(llm or rendered)
 
 
 def scaffold_and_describe(query: str, settings: Settings | None = None) -> str:
@@ -225,3 +246,64 @@ def scaffold_and_describe(query: str, settings: Settings | None = None) -> str:
             return f"No assignment matched {query!r}."
         path = scaffold_assignment(assignment, settings)
         return describe_scaffold(path)
+
+
+def _aware(dt: datetime, tz) -> datetime:
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=tz)
+    return dt
+
+
+def format_deadline_alert(settings: Settings | None = None, now: datetime | None = None) -> str | None:
+    """Upcoming 24h deadlines. Empty when nothing new to push."""
+    import json
+
+    settings = settings or get_settings()
+    tz = ZoneInfo(settings.timezone)
+    now = now or datetime.now(tz=tz)
+    horizon = now + timedelta(hours=24)
+    path = settings.data_dir / "deadline_alerts.json"
+    sent: dict[str, str] = {}
+    if path.exists():
+        try:
+            sent = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            sent = {}
+    lines: list[str] = []
+    new_sent = dict(sent)
+    with session_scope(settings) as session:
+        live_ids = live_course_ids(session)
+        rows = session.query(Assignment).filter(Assignment.due_at.is_not(None)).order_by(Assignment.due_at.asc()).all()
+        if live_ids:
+            rows = [row for row in rows if row.course_id in live_ids]
+        for row in rows:
+            due = _aware(row.due_at, tz)
+            if not (now <= due <= horizon):
+                continue
+            key = f"assignment-{row.id}-{due.isoformat()}"
+            if key in sent:
+                continue
+            new_sent[key] = now.isoformat()
+            due_s = due.strftime("%a %b %d %H:%M")
+            lines.append(f"- **{row.course.code}:** {row.title} ({due_s})")
+    if not lines:
+        return None
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(new_sent, indent=2), encoding="utf-8")
+    body = "\n".join(
+        [
+            "**Due in the next 24 hours**",
+            "",
+            *lines,
+            "",
+            "_Scaffolding only — you write the work. /plan for a breakdown._",
+        ]
+    )
+    llm = complete(
+        EXECUTIVE_SYSTEM + " Tighten this 24-hour deadline alert. Keep every course and time.",
+        body,
+        settings=settings,
+    )
+    from school_secretary.agents.persona import polish_outgoing
+
+    return polish_outgoing(llm or body)

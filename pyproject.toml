@@ -12,6 +12,7 @@ dependencies = [
     "lxml>=5.3",
     "mcp>=1.9",
     "openai>=1.40",
+    "anthropic>=0.40",
     "playwright>=1.47",
     "pydantic-settings>=2.4",
     "pymupdf>=1.24",

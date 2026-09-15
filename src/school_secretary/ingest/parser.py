@@ -134,6 +134,89 @@ _SKIP_NAV = {
     "more actions",
 }
 
+KEEP_RE = re.compile(
+    r"\b(syllabus|rubric|lab\b|labs\b|quiz|quizzes|test\b|tests\b|exam|midterm|final\b|"
+    r"assignment|project|essay|dropbox|deadline)\b",
+    re.IGNORECASE,
+)
+RESIDENCE_RE = re.compile(
+    r"\b(residence|housing contract|lease agreement|dorm(itory)?|tenant|residence agreement|"
+    r"room(s)? contract|meal plan)\b",
+    re.IGNORECASE,
+)
+HOMEWORK_PSET_RE = re.compile(
+    r"\b(homework|problem set|p-?sets?|worksheet|practice problems?)\b",
+    re.IGNORECASE,
+)
+READING_RE = re.compile(
+    r"\b((week\s+\d+\s+)?readings?|required reading|chapter\s+\d+|textbook|"
+    r"lecture slides|course notes|weekly reading)\b",
+    re.IGNORECASE,
+)
+
+
+def is_clutter_material(title: str | None, text: str = "", filename: str = "") -> bool:
+    """Residence contracts, general readings, and homework problem sets — skip these."""
+    heading = f"{title or ''} {filename or ''}"
+    blob = f"{heading}\n{(text or '')[:1500]}"
+    if RESIDENCE_RE.search(blob) and not KEEP_RE.search(heading):
+        return True
+    if HOMEWORK_PSET_RE.search(heading) and not re.search(
+        r"\b(lab\b|quiz|test\b|exam|project|essay|syllabus)\b", heading, re.IGNORECASE
+    ):
+        return True
+    if READING_RE.search(heading) and not KEEP_RE.search(heading):
+        return True
+    return False
+
+
+def is_target_material(
+    title: str | None,
+    text: str = "",
+    filename: str = "",
+    *,
+    has_due: bool = False,
+    kind: str = "",
+) -> bool:
+    """Announcements, assignment/project dropboxes, labs, quizzes, tests, syllabi, due dates."""
+    if is_noisy_assignment_title(title) and kind != "announcement":
+        return False
+    heading = f"{title or ''} {filename or ''}"
+    blob = f"{heading}\n{(text or '')[:1500]}"
+    if is_clutter_material(title, text, filename):
+        return False
+    if kind == "announcement":
+        return True
+    if KEEP_RE.search(blob):
+        return True
+    if has_due or extract_due_from_text(blob) is not None:
+        return True
+    return False
+
+
+def is_target_assignment(title: str | None, instructions: str = "", due_at=None) -> bool:
+    return is_target_material(title, instructions, has_due=due_at is not None, kind="assignment")
+
+
+def is_target_announcement(title: str | None, body: str = "") -> bool:
+    return is_target_material(title, body, kind="announcement")
+
+
+def is_target_content_topic(title: str | None) -> bool:
+    """Follow content-module links only when they look like syllabus/lab/quiz/assignment."""
+    if is_clutter_material(title, filename=title or ""):
+        return False
+    return bool(KEEP_RE.search(title or "")) or extract_due_from_text(title or "") is not None
+
+
+def should_download_file(label: str, href: str = "", *, strict: bool = False) -> bool:
+    name = (label or "").strip() or (href or "").rsplit("/", 1)[-1].split("?")[0]
+    if is_clutter_material(name, filename=name):
+        return False
+    if not strict:
+        return True
+    return is_target_material(name, filename=name or href)
+
 
 def extract_attachments_from_json(item: dict[str, Any]) -> list[dict[str, str]]:
     found: list[dict[str, str]] = []
@@ -196,12 +279,18 @@ def extract_word_count(text: str) -> int | None:
 
 def classify_document(filename: str, text: str = "") -> str:
     blob = f"{filename}\n{text[:2000]}".lower()
+    if is_clutter_material(filename, text, filename):
+        return "clutter"
     if "syllabus" in blob:
         return "syllabus"
     if "rubric" in blob:
         return "rubric"
+    if any(word in blob for word in ("quiz", "midterm", "exam", "test ")):
+        return "quiz"
     if "lab" in blob:
         return "lab"
+    if any(word in blob for word in ("assignment", "project", "essay")):
+        return "assignment"
     return "handout"
 
 
