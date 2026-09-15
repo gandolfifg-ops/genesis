@@ -15,7 +15,7 @@ from school_secretary.agents.memory import (
 from school_secretary.agents.planner import format_plan, plan_unplanned
 from school_secretary.agents.triage import triage_pending
 from school_secretary.config import Settings, get_settings
-from school_secretary.db.live import live_course_ids
+from school_secretary.db.live import course_by_code, live_course_ids
 from school_secretary.db.models import Announcement, Assignment, Course, SubTask
 from school_secretary.db.session import session_scope
 from school_secretary.rag.index import index_documents
@@ -41,12 +41,13 @@ def run_agents(settings: Settings | None = None) -> dict[str, int]:
 
 def find_course(session: Session, query: str) -> Course | None:
     q = query.strip()
-    course = session.query(Course).filter(Course.code.ilike(q)).one_or_none()
+    course = course_by_code(session, q)
     if course:
         return course
-    return session.query(Course).filter(Course.code.ilike(f"%{q}%")).one_or_none() or session.query(
-        Course
-    ).filter(Course.name.ilike(f"%{q}%")).one_or_none()
+    return (
+        session.query(Course).filter(Course.code.ilike(f"%{q}%")).order_by(Course.id.asc()).first()
+        or session.query(Course).filter(Course.name.ilike(f"%{q}%")).order_by(Course.id.asc()).first()
+    )
 
 
 def find_assignment(session: Session, query: str) -> Assignment | None:

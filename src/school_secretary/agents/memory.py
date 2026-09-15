@@ -153,9 +153,15 @@ def format_habit_summary(session: Session, now: datetime | None = None) -> str:
     rows = weekly_minutes_by_course(session, now)
     streak = study_streak_days(session, now)
     if not rows:
+        example = "CISC 235"
+        live_ids = live_course_ids(session)
+        if live_ids:
+            live = session.get(Course, live_ids[0])
+            if live:
+                example = live.code
         return (
             "No study sessions logged this week. "
-            "Use `school-secretary study --course 'CISC 235' --minutes 45` "
+            f"Use `school-secretary study --course '{example}' --minutes 45` "
             f"(streak: {streak} day(s))."
         )
     parts = []

@@ -18,3 +18,16 @@ def live_course_ids(session: Session) -> list[int] | None:
         if course.org_unit_id not in FIXTURE_ORG_UNIT_IDS
     ]
     return live or None
+
+
+def course_by_code(session: Session, code: str) -> Course | None:
+    """First course with this code. Live onQ can have duplicate codes (two org units)."""
+    q = (code or "").strip()
+    if not q:
+        return None
+    return (
+        session.query(Course)
+        .filter(Course.code.ilike(q))
+        .order_by(Course.id.asc())
+        .first()
+    )

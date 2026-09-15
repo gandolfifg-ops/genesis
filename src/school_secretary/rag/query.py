@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from school_secretary.agents.llm import complete
 from school_secretary.config import Settings, get_settings
+from school_secretary.db.live import course_by_code
 from school_secretary.db.models import Course, Document
 from school_secretary.db.session import session_scope
 from school_secretary.rag.embed import cosine, hash_embed, query_terms
@@ -29,14 +30,19 @@ def detect_course(session: Session, question: str) -> Course | None:
     match = COURSE_CODE_RE.search(question)
     if match:
         code = f"{match.group(1).upper()} {match.group(2)}"
-        course = session.query(Course).filter(Course.code.ilike(code)).one_or_none()
+        course = course_by_code(session, code)
         if course:
             return course
-        course = session.query(Course).filter(Course.code.ilike(f"%{match.group(2)}%")).one_or_none()
+        course = (
+            session.query(Course)
+            .filter(Course.code.ilike(f"%{match.group(2)}%"))
+            .order_by(Course.id.asc())
+            .first()
+        )
         if course:
             return course
     lowered = question.lower()
-    for course in session.query(Course).all():
+    for course in session.query(Course).order_by(Course.id.asc()).all():
         if course.code.lower() in lowered or course.name.lower() in lowered:
             return course
     return None
@@ -107,14 +113,27 @@ def extractive_answer(question: str, retrievals: list[Retrieval]) -> str:
 class ChromaCourseRetriever:
     """LlamaIndex-style retriever over the persistent Chroma collection."""
 
-    def __init__(self, settings: Settings | None = None, course_id: int | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        course_id: int | None = None,
+        course_ids: list[int] | None = None,
+    ) -> None:
         self.settings = settings or get_settings()
-        self.course_id = course_id
+        ids = list(course_ids or [])
+        if course_id is not None and course_id not in ids:
+            ids.append(course_id)
+        self.course_ids = ids
+        self.course_id = ids[0] if len(ids) == 1 else course_id
         self.collection = get_collection(self.settings)
 
     def retrieve(self, query_bundle: QueryBundle | str, n: int = 6) -> list[NodeWithScore]:
         question = query_bundle.query_str if isinstance(query_bundle, QueryBundle) else query_bundle
-        where = {"course_id": str(self.course_id)} if self.course_id is not None else None
+        where = None
+        if len(self.course_ids) == 1:
+            where = {"course_id": str(self.course_ids[0])}
+        elif len(self.course_ids) > 1:
+            where = {"course_id": {"$in": [str(cid) for cid in self.course_ids]}}
         kwargs = {"query_texts": [question], "n_results": n}
         if where:
             kwargs["where"] = where
@@ -137,11 +156,16 @@ def retrieve(question: str, settings: Settings | None = None, n: int = 8) -> lis
     settings = settings or get_settings()
     with session_scope(settings) as session:
         course = detect_course(session, question)
-        retriever = ChromaCourseRetriever(settings, course_id=course.id if course else None)
+        same_code_ids = None
+        if course:
+            same_code_ids = [
+                row.id for row in session.query(Course).filter(Course.code == course.code).all()
+            ]
+        retriever = ChromaCourseRetriever(settings, course_ids=same_code_ids)
         nodes = retriever.retrieve(question, n=n)
         docs = session.query(Document).all()
-        if course:
-            docs = [doc for doc in docs if doc.course_id == course.id]
+        if same_code_ids:
+            docs = [doc for doc in docs if doc.course_id in same_code_ids]
         hybrid: list[Retrieval] = []
         query_vec = hash_embed(question)
         seen: set[str] = set()

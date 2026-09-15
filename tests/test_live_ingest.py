@@ -1,5 +1,5 @@
 from school_secretary.db.live import FIXTURE_ORG_UNIT_IDS, live_course_ids
-from school_secretary.db.models import Course
+from school_secretary.db.models import Announcement, Assignment, Course
 from school_secretary.db.session import init_db, session_scope
 from school_secretary.ingest.brightspace import (
     SESSION_EXPIRED,
@@ -209,6 +209,43 @@ def test_classify_natural_onq_xhr_and_dom_payloads(tmp_path, monkeypatch):
         assert course.code == "CISC 999"
         assert session.query(Announcement).one().title == "Office hours"
         assert session.query(Assignment).one().title == "Lab 1"
+
+
+def test_duplicate_course_codes_do_not_crash_lookup(tmp_path, monkeypatch):
+    monkeypatch.setenv("SCHOOL_SECRETARY_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "")
+    from school_secretary.config import reset_settings
+    from school_secretary.db.session import reset_engine
+
+    reset_settings()
+    reset_engine()
+    from school_secretary.config import get_settings
+    from school_secretary.agents.orchestrator import find_course
+    from school_secretary.db.live import course_by_code
+    from school_secretary.rag.index import index_documents
+    from school_secretary.rag.query import answer_question, detect_course
+
+    settings = get_settings()
+    init_db(settings)
+    with session_scope(settings) as session:
+        session.add(Course(org_unit_id="111", code="APSC 141", name="Programming 1", term="F26"))
+        session.add(Course(org_unit_id="222", code="APSC 141", name="Programming 1 lab", term="F26"))
+        session.flush()
+        session.add(
+            Announcement(
+                course_id=session.query(Course).filter_by(org_unit_id="222").one().id,
+                d2l_id="n1",
+                title="Lab tools",
+                body="Bring a laptop to the APSC 141 lab. No late labs without consideration.",
+            )
+        )
+        assert course_by_code(session, "APSC 141") is not None
+        assert detect_course(session, "late labs in APSC 141") is not None
+        assert find_course(session, "APSC 141") is not None
+    index_documents(settings, force=True)
+    answer = answer_question("What should I bring to the APSC 141 lab?", settings=settings)
+    assert "laptop" in answer.lower()
 
 
 def test_xhr_capture_keeps_natural_json_and_ignores_403():
