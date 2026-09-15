@@ -75,7 +75,7 @@ class Settings(BaseSettings):
     @property
     def database_path(self) -> Path:
         target = self.data_dir / "secretary.db"
-        if not target.exists():
+        if not target.exists() or target.stat().st_size == 0:
             import shutil
             bundled = ROOT / "src" / "school_secretary" / "data" / "secretary.db"
             if bundled.exists():
