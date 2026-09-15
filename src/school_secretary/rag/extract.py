@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import zipfile
 from pathlib import Path
+from xml.etree import ElementTree as ET
 
 import pymupdf as fitz
+
+DOCX_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 
 
 def file_hash(path: Path) -> str:
@@ -21,6 +25,31 @@ def extract_pdf_text(path: Path) -> str:
     finally:
         document.close()
     return "\n".join(pages).strip()
+
+
+def extract_docx_text(path: Path) -> str:
+    try:
+        with zipfile.ZipFile(path) as archive:
+            xml = archive.read("word/document.xml")
+    except (OSError, KeyError, zipfile.BadZipFile):
+        return ""
+    root = ET.fromstring(xml)
+    parts = [node.text or "" for node in root.iter(f"{DOCX_NS}t")]
+    return " ".join(part for part in parts if part).strip()
+
+
+def extract_file_text(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix == ".pdf":
+        try:
+            return extract_pdf_text(path)
+        except Exception:
+            return ""
+    if suffix == ".docx":
+        return extract_docx_text(path)
+    if suffix in {".txt", ".md", ".csv", ".rtf"}:
+        return path.read_text(encoding="utf-8", errors="ignore")
+    return ""
 
 
 def _wrap(text: str, width: int = 92) -> list[str]:

@@ -55,15 +55,25 @@ def demo() -> None:
 @app.command()
 def ingest(
     fixtures: bool = typer.Option(True, "--fixtures/--live", help="Fixture JSON/PDFs (default) or live onQ."),
+    raw: bool = typer.Option(False, "--raw", help="Parse data/raw files into SQLite and embed (no browser)."),
     headed: bool = typer.Option(
         True,
         "--headed/--headless",
         help="Visible Chromium for --live (default). --headless invalidates a headed onQ session.",
     ),
 ) -> None:
-    """Ingest Brightspace data into SQLite. Default is offline fixtures."""
+    """Ingest Brightspace data into SQLite, then parse files and embed.
+
+    `--live` (headed) crawls content/announcements/dropbox, downloads files into
+    `data/raw/`, and runs the same parse+Chroma path as `--raw`. No extra command.
+    """
     settings = get_settings()
     init_db(settings)
+    if raw:
+        from school_secretary.ingest.brightspace import ingest_raw
+
+        print(ingest_raw(settings))
+        return
     if fixtures:
         from school_secretary.ingest.fixtures import ingest_fixtures
 
@@ -80,7 +90,7 @@ def ingest(
 
 @app.command()
 def login() -> None:
-    """Queen's SSO in a visible Chromium window; then scrape onQ into SQLite before Chromium closes."""
+    """Queen's SSO in a visible window; then crawl, download files, and embed before Chromium closes."""
     from school_secretary.ingest.browser import login as browser_login
 
     browser_login(get_settings())

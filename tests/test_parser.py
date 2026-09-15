@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from school_secretary.ingest.parser import (
     extract_due_from_text,
     infer_assignment_type,
+    is_noisy_assignment_title,
     parse_dropbox_item,
     parse_enrollment_item,
     parse_news_item,
@@ -36,6 +37,20 @@ def test_due_date_from_prose_when_api_field_missing():
     dt = extract_due_from_text("Due: Friday, October 3, 2026 at 11:59 PM")
     assert dt is not None
     assert dt.month == 10 and dt.day == 3
+    iso = extract_due_from_text("Available until 2026-09-20T23:59:00.000Z")
+    assert iso is not None and iso.month == 9 and iso.day == 20
+    us = extract_due_from_text("Due Date 9/20/2026 11:59 PM")
+    assert us is not None and us.month == 9 and us.day == 20
+
+
+def test_noisy_dropbox_status_titles_are_skipped():
+    assert is_noisy_assignment_title("Not Submitted")
+    assert is_noisy_assignment_title("1 Submission, 1 File")
+    assert is_noisy_assignment_title("2 Submissions, 2 Files")
+    assert is_noisy_assignment_title("0 Files")
+    assert is_noisy_assignment_title("Dropbox")
+    assert not is_noisy_assignment_title("Lab 2 — Binary Search Trees")
+    assert not is_noisy_assignment_title("Assignment 1 CAD drawing")
 
 
 def test_essay_type_and_news():

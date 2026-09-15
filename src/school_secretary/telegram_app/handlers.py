@@ -14,6 +14,7 @@ from school_secretary.agents.orchestrator import (
     render_briefing,
     scaffold_and_describe,
 )
+from school_secretary.agents.persona import polish_outgoing
 from school_secretary.config import Settings
 from school_secretary.db.session import session_scope
 
@@ -139,9 +140,9 @@ def dispatch_tool(name: str, arguments: dict, settings: Settings) -> str:
         from school_secretary.calendar_sync import sync_calendar
 
         result = sync_calendar(settings)
-        return (
-            f"Calendar sync via {result['transport']}: {result['events']} events. "
-            f"ICS: {result['ics_path']}"
+        extra = f" ({result['error']})" if result.get("error") else ""
+        return polish_outgoing(
+            f"Calendar updated — **{result['events']}** deadlines via {result['transport']}.{extra}"
         )
     return f"Unknown tool {name}"
 
@@ -151,8 +152,9 @@ def route_locally(text: str, settings: Settings) -> str:
     lower = stripped.lower()
     if lower in {"/start", "start", "help", "/help"}:
         return (
-            "My School Secretary is on. Commands: /ask /briefing /evening /plan /scaffold "
-            "/email /study /habits /calendar\n"
+            "**My School Secretary** is on.\n\n"
+            "Commands: `/ask` `/briefing` `/evening` `/plan` `/scaffold` "
+            "`/email` `/study` `/habits` `/calendar`\n\n"
             "I never complete assignments — outlines and TODOs only."
         )
     if lower.startswith("/ask"):
@@ -175,10 +177,9 @@ def route_locally(text: str, settings: Settings) -> str:
         from school_secretary.calendar_sync import sync_calendar
 
         result = sync_calendar(settings)
-        extra = f" Error: {result['error']}" if result.get("error") else ""
-        return (
-            f"Synced {result['events']} deadlines via {result['transport']}. "
-            f"ICS at {result['ics_path']}.{extra}"
+        extra = f" ({result['error']})" if result.get("error") else ""
+        return polish_outgoing(
+            f"Calendar updated — **{result['events']}** deadlines via {result['transport']}.{extra}"
         )
     if lower.startswith("/habits") or lower in {"habits", "streak"}:
         from school_secretary.agents.memory import format_habit_summary, suggested_block
@@ -205,8 +206,9 @@ def route_locally(text: str, settings: Settings) -> str:
 def handle_user_text(text: str, settings: Settings) -> str:
     llm = complete(
         system=(
-            "You are My School Secretary for Queen's onQ. Use tools for course facts. "
-            "Never complete assignments. Prefer short, practical answers."
+            "You are My School Secretary, an executive assistant for Queen's onQ. "
+            "Clean Markdown. Actionable. Never complete assignments. "
+            "Never mention local file paths or raw source filenames."
         ),
         user=text,
     )
@@ -235,14 +237,14 @@ def handle_user_text(text: str, settings: Settings) -> str:
                 for call in message.tool_calls:
                     args = json.loads(call.function.arguments or "{}")
                     outputs.append(dispatch_tool(call.function.name, args, settings))
-                return "\n\n".join(outputs)
+                return polish_outgoing("\n\n".join(outputs))
             if message.content:
-                return message.content
+                return polish_outgoing(message.content)
         except Exception:
             pass
     if llm:
-        return llm
-    return route_locally(text, settings)
+        return polish_outgoing(llm)
+    return polish_outgoing(route_locally(text, settings))
 
 
 def remember_chat_id(path: Path, chat_id: int) -> None:

@@ -139,12 +139,15 @@ Commands: `/start` `/help` `/ask` `/briefing` `/evening` `/plan` `/scaffold` `/e
 
 ## 2. Playwright Queen’s SSO (Windows WSL)
 
-Live onQ ingest is **optional**. The fixture demo never opens a browser.
+Live onQ ingest is **optional**. The fixture demo never opens a browser. You never download PDFs by hand: `login` and `ingest --live` click every attached PDF/docx/file into `data/raw/`, parse them, and embed into Chroma in that same run.
 
 Do this in **Ubuntu WSL**, not PowerShell. Clone `francescog11/genesis`, then from the repo root:
 
 ```bash
 cd ~/genesis   # or wherever you cloned francescog11/genesis
+git fetch origin
+git checkout cursor/school-secretary-slice-1-744e
+git pull origin cursor/school-secretary-slice-1-744e
 curl -LsSf https://astral.sh/uv/install.sh | sh
 source "$HOME/.local/bin/env"
 uv sync --group dev
@@ -155,21 +158,20 @@ echo "$DISPLAY"    # Windows 11 WSLg should print something like :0
 uv run school-secretary demo
 uv run pytest
 
-# Live onQ — headed Chromium on your Windows desktop:
+# One-time headed login (NetID, password, Duo). After you press Enter, the same
+# window crawls content + announcements + dropbox, downloads files, and embeds:
 uv run school-secretary login
-# NetID, password, Duo, wait for onQ homepage, press Enter.
-# That same window then reads course tiles (captured page requests, then DOM) into secretary.db.
 
-# Later refresh (headed, same data/browser/ profile — do not use --headless):
+# Later refresh — headed, same data/browser/ profile. Downloads + parse + Chroma
+# happen in this one command (do not pass --headless; no extra ingest --raw):
 uv run school-secretary ingest --live
-uv run school-secretary ingest --live --headed   # explicit; this is the default
+# same as: uv run school-secretary ingest --live --headed
 
-# Optional after ingest:
+# Re-parse/embed files already in data/raw/ without opening Chromium:
+uv run school-secretary ingest --raw
+
 uv run school-secretary status
-# live_course_codes must be non-empty after a successful login/ingest
 uv run school-secretary calendar-sync
-uv run school-secretary habits
-uv run school-secretary whatsapp    # mock on :43148 unless Meta keys are set
 uv run school-secretary telegram    # needs TELEGRAM_BOT_TOKEN in .env
 ```
 
@@ -188,10 +190,11 @@ uv run school-secretary login
 
 **What you should see**
 
-1. A **real Chromium** window opens on your Windows desktop (Playwright persistent profile, 1280×900).
+1. A **real Chromium** window opens on your Windows desktop (Playwright persistent profile, 1280×900, `accept_downloads=True`).
 2. It goes to the Queen’s onQ login at **`https://onq.queensu.ca/d2l/home`**.
 3. Type your **NetID** and **password**, then approve **Duo MFA**.
-4. When you reach the **onQ homepage** (course tiles / Brightspace navbar), leave the window open, switch back to the **WSL terminal**, and **press Enter**. Live ingest then runs **in that same headed window**: it captures JSON the page already requested, then scrapes course tiles / announcements / assignments from the DOM. Chromium closes after SQLite is updated.
+4. When you reach the **onQ homepage** (course tiles / Brightspace navbar), leave the window open, switch back to the **WSL terminal**, and **press Enter**.
+5. The same headed window then walks **every course**: content modules, announcement pages, and dropbox/assignment detail pages (not homepage tiles only). It clicks downloads for PDF, docx, and other files into `data/raw/{orgUnitId}/`, reads due dates and descriptions from those pages, upserts SQLite, parses PDFs/docx, embeds into Chroma, replans subtasks, and refreshes the calendar. Chromium closes when that finishes. **You do not download PDFs yourself.**
 
 **Where the session is saved**
 
@@ -199,7 +202,7 @@ uv run school-secretary login
 | --- | --- |
 | `storage_state.json` | Playwright `storage_state` (cookies + origins), **repository root**, gitignored — this is the file ingest reads |
 | `session.json` | Copy of the same JSON (also gitignored) so anything still looking for the old name keeps working |
-| `data/browser/` | Persistent Chromium user-data dir for the same profile |
+| `data/browser/` | Persistent Chromium user-data dir for the same profile — never commit |
 
 The login command prints these paths when it finishes. Duo is only needed during this one visible login. After you press Enter, ingest runs in-session (same persistent profile under `data/browser/`).
 
@@ -217,12 +220,13 @@ Do **not** pass `--headless` after a headed login. Brightspace TLS/session cooki
 1. Starts **headed Chromium** (`headless=False`) with the persistent profile `data/browser/` and overlays `storage_state.json` (Playwright forbids `storage_state=` on persistent launch)
 2. Attaches `page.on("response", ...)` then opens `{ONQ_BASE_URL}/d2l/home` with `wait_until="networkidle"` so the homepage can fire its usual background requests
 3. If a captured response looks like enrollments, news, or dropbox JSON, keeps that payload (this is interception of **natural** page traffic — not a scripted LE/LP GET)
-4. Falls back to DOM scraping: course tiles (`d2l-enrollment-card` / `a[href*="/d2l/home/"]`), then each course home, announcements, and dropbox/assignments lists via `page.locator(...)`
-5. Saves raw JSON under `data/raw/{orgUnitId}/` and upserts Courses / Assignments / Announcements / Documents into SQLite (idempotent)
+4. Scrapes course tiles, then for **each course** navigates content home / lessons, the news list + individual announcements, and dropbox/assignment lists + **detail pages** via `page.locator(...)`
+5. Clicks in-page Download / file links (`accept_downloads=True`) into `data/raw/{orgUnitId}/` — PDFs, docx, and other attachments. Status-cell titles such as `Not Submitted` or `1 Submission, 1 File` are ignored; due dates are read from the detail page
+6. Runs the `--raw` path automatically: parse extracted text into SQLite, embed into Chroma, replan, calendar sync. No second command
 
 Live ingest does **not** call `/d2l/api/le/...` or `/d2l/api/lp/...` through a Playwright request client or `fetch()`. Brightspace returns HTTP 403 for those scripted calls even inside an already-open tab.
 
-Fixture ingest (`ingest --fixtures` / `demo`) never launches Chromium. Never commit `.env` or `data/browser/`.
+Fixture ingest (`ingest --fixtures` / `demo`) never launches Chromium. Never commit `.env` or `data/browser/`. Cookie values are never printed.
 
 If `storage_state.json` is missing:
 
@@ -298,10 +302,10 @@ Tools: `list_courses`, `list_assignments`, `list_announcements`, `query_syllabus
 
 ```
 src/school_secretary/
-  ingest/     Playwright session, Brightspace LE client, fixture seed, JSON/HTML parser
+  ingest/     Playwright session, Brightspace DOM/XHR ingest (no scripted LE/LP), fixture seed, JSON/HTML parser
   db/         SQLAlchemy SQLite (courses, assignments, announcements, documents, habits, subtasks)
-  rag/        PyMuPDF → hashing embeddings → ChromaDB; LlamaIndex retriever + extractive QA
-  agents/     triage, planner, drafting, study-habit memory, orchestrator
+  rag/        PyMuPDF/docx → hashing embeddings → ChromaDB; LlamaIndex retriever + extractive QA
+  agents/     triage, planner (from assignment + file text), drafting, persona, study-habit memory, orchestrator
   mcp_app/    MCP HTTP/stdio server (`mcp` 2.x `MCPServer`)
   telegram_app/
   whatsapp_app/

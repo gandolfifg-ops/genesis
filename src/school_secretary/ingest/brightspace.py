@@ -21,11 +21,12 @@ from school_secretary.db.session import session_scope
 from school_secretary.ingest.parser import (
     classify_document,
     extract_due_from_text,
+    is_noisy_assignment_title,
     parse_dropbox_item,
     parse_enrollment_item,
     parse_news_item,
 )
-from school_secretary.rag.extract import extract_pdf_text, file_hash
+from school_secretary.rag.extract import extract_file_text, file_hash
 
 LE = "1.47"
 
@@ -148,7 +149,9 @@ def upsert_document(
     row = rows[0] if rows else None
     for duplicate in rows[1:]:
         session.delete(duplicate)
-    text = extract_pdf_text(path) if path.suffix.lower() == ".pdf" else path.read_text(encoding="utf-8", errors="ignore")
+    text = extract_file_text(path)
+    if not text and path.suffix.lower() not in {".pdf", ".docx"}:
+        text = path.read_text(encoding="utf-8", errors="ignore") if path.is_file() else ""
     kind = doc_type or classify_document(filename, text)
     if row is None:
         row = Document(
@@ -200,6 +203,8 @@ def ingest_payloads(
             dropbox_path = write_raw_json(raw_dir / "dropbox.json", dropbox_items)
             for item in dropbox_items:
                 parsed = parse_dropbox_item(item)
+                if is_noisy_assignment_title(parsed.get("title")):
+                    continue
                 assignment = upsert_assignment(session, course, parsed, str(dropbox_path))
                 for attachment in parsed["attachments"]:
                     dest = _resolve_attachment(attachment, attachment_files, raw_dir)
@@ -212,8 +217,39 @@ def ingest_payloads(
                             assignment=assignment,
                         )
 
+        _attach_loose_raw_files(session, settings)
         session.flush()
         return snapshot_counts(session)
+
+
+FILE_SUFFIXES = {".pdf", ".docx", ".doc", ".txt", ".pptx", ".xlsx", ".rtf", ".md"}
+
+
+def _attach_loose_raw_files(session, settings: Settings) -> None:
+    for course in session.query(Course).all():
+        raw_dir = settings.raw_dir / course.org_unit_id
+        if not raw_dir.is_dir():
+            continue
+        assignments = list(course.assignments)
+        for path in sorted(raw_dir.iterdir()):
+            if not path.is_file() or path.suffix.lower() not in FILE_SUFFIXES:
+                continue
+            stem = path.stem.lower().replace("_", " ").replace("-", " ")
+            compact_stem = re.sub(r"[^a-z0-9]+", "", path.stem.lower())
+            linked = None
+            for assignment in assignments:
+                hay = (assignment.title or "").lower()
+                compact_hay = re.sub(r"[^a-z0-9]+", "", hay)
+                if (
+                    stem in hay
+                    or hay in stem
+                    or path.stem.lower() in hay.replace(" ", "_")
+                    or (compact_stem and compact_stem in compact_hay)
+                    or (compact_hay and compact_hay in compact_stem)
+                ):
+                    linked = assignment
+                    break
+            upsert_document(session, course, path, path.name, assignment=linked)
 
 
 def _resolve_attachment(
@@ -239,6 +275,7 @@ def ingest_from_raw_dir(settings: Settings | None = None) -> dict[str, int]:
     enrollments: list[dict[str, Any]] = []
     news_by_org: dict[str, list[dict[str, Any]]] = {}
     dropbox_by_org: dict[str, list[dict[str, Any]]] = {}
+    attachment_files: dict[str, Path] = {}
     for course_dir in sorted(settings.raw_dir.glob("*")):
         if not course_dir.is_dir():
             continue
@@ -252,7 +289,10 @@ def ingest_from_raw_dir(settings: Settings | None = None) -> dict[str, int]:
         dropbox_path = course_dir / "dropbox.json"
         if dropbox_path.exists():
             dropbox_by_org[org_id] = json.loads(dropbox_path.read_text(encoding="utf-8"))
-    return ingest_payloads(settings, enrollments, news_by_org, dropbox_by_org)
+        for path in course_dir.iterdir():
+            if path.is_file() and path.suffix.lower() in FILE_SUFFIXES:
+                attachment_files[path.name] = path
+    return ingest_payloads(settings, enrollments, news_by_org, dropbox_by_org, attachment_files)
 
 
 def parse_onq_api_response(status: int, content_type: str, text: str) -> Any:
@@ -375,6 +415,7 @@ def dropbox_from_dom(
     due: str | None = None,
     instructions: str = "",
     d2l_id: str | None = None,
+    href: str | None = None,
 ) -> dict[str, Any]:
     name = (title or "Assignment").strip() or "Assignment"
     item: dict[str, Any] = {
@@ -384,6 +425,8 @@ def dropbox_from_dom(
     }
     if due:
         item["DueDate"] = due
+    if href:
+        item["Url"] = href
     return item
 
 
@@ -649,7 +692,7 @@ async def scrape_announcements_dom(page, org_id: str) -> list[dict[str, Any]]:
 
 async def scrape_assignments_dom(page, org_id: str) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
-    rows = page.locator("table tr, d2l-table tr, tbody tr")
+    rows = page.locator("table tr, d2l-table tr, tbody tr, d2l-list-item")
     try:
         n = await rows.count()
     except Exception:
@@ -657,14 +700,24 @@ async def scrape_assignments_dom(page, org_id: str) -> list[dict[str, Any]]:
     for i in range(min(n, 80)):
         row = rows.nth(i)
         try:
-            link = row.locator("a").first
-            if await link.count() == 0:
-                continue
-            title = " ".join(((await link.inner_text()) or "").split())
-            href = (await link.get_attribute("href")) or ""
+            links = row.locator("a[href]")
+            count = await links.count()
         except Exception:
             continue
-        if not title or title.lower() in _SKIP_TITLES:
+        title = ""
+        href = ""
+        for j in range(count):
+            try:
+                candidate = " ".join(((await links.nth(j).inner_text()) or "").split())
+                candidate_href = (await links.nth(j).get_attribute("href")) or ""
+            except Exception:
+                continue
+            if is_noisy_assignment_title(candidate):
+                continue
+            title, href = candidate, candidate_href
+            if "db=" in candidate_href or "dropbox" in candidate_href.lower():
+                break
+        if not title or is_noisy_assignment_title(title):
             continue
         if _HOME_ORG_RE.search(href) and "dropbox" not in href.lower() and "db=" not in href.lower():
             continue
@@ -677,63 +730,271 @@ async def scrape_assignments_dom(page, org_id: str) -> list[dict[str, Any]]:
         db_match = _DB_ID_RE.search(href)
         d2l_id = db_match.group(1) if db_match else _stable_id(org_id, title)
         instructions = row_text.replace(title, "", 1).strip()
-        items.append(dropbox_from_dom(title, due, instructions, d2l_id))
+        items.append(dropbox_from_dom(title, due, instructions, d2l_id, href=href))
     extra = await _locator_count_text(
         page.locator("a[href*='db='], a[href*='dropbox'], a[href*='/assignments/']")
     )
     for href, text in extra:
-        if not text or text.lower() in _SKIP_TITLES:
+        if is_noisy_assignment_title(text):
             continue
         db_match = _DB_ID_RE.search(href)
-        items.append(dropbox_from_dom(text, None, "", db_match.group(1) if db_match else _stable_id(org_id, text)))
+        items.append(dropbox_from_dom(text, None, "", db_match.group(1) if db_match else _stable_id(org_id, text), href=href))
     return _merge_named_items([], items)
 
 
-async def _download_visible_pdfs(page, dest_dir: Path) -> dict[str, Path]:
-    from school_secretary.ingest.browser import download_with_dom, scrape_pdf_links
+def _abs_url(base: str, href: str) -> str:
+    if not href:
+        return ""
+    if href.startswith("http://") or href.startswith("https://"):
+        return href
+    if href.startswith("/"):
+        return base.rstrip("/") + href
+    return base.rstrip("/") + "/" + href
 
-    saved: dict[str, Path] = {}
+
+async def _expand_content_modules(page) -> None:
+    loc = page.locator(
+        "button[aria-expanded='false'], d2l-button-icon[icon*='expand'], "
+        "d2l-expand-collapse-content, .d2l-expandcollapse-toggle"
+    )
     try:
-        links = await scrape_pdf_links(page, page.url)
+        n = await loc.count()
     except Exception:
-        return saved
-    for link in links:
-        if _is_api_url(link):
-            continue
-        filename = link.rsplit("/", 1)[-1].split("?")[0] or _stable_id(link) + ".pdf"
-        if "?" in filename:
-            filename = filename.split("?")[0]
-        if not filename.lower().endswith(".pdf"):
-            filename += ".pdf"
-        dest = dest_dir / filename
-        if dest.exists():
-            saved[filename] = dest
-            continue
+        return
+    for i in range(min(n, 25)):
         try:
-            await download_with_dom(page, link, dest)
-            if dest.exists():
-                saved[filename] = dest
+            await loc.nth(i).click(timeout=2_000)
+            await page.wait_for_timeout(200)
         except Exception:
             continue
+
+
+async def _download_page_files(page, dest_dir: Path, limit: int = 20) -> dict[str, Path]:
+    from school_secretary.ingest.browser import download_page_files
+
+    try:
+        return await download_page_files(page, dest_dir, limit=limit)
+    except Exception:
+        return {}
+
+
+async def _heading_text(page) -> str:
+    for selector in ("h1", "d2l-heading", ".d2l-page-title", ".d2l-page-header", "h2"):
+        loc = page.locator(selector)
+        try:
+            if await loc.count():
+                text = " ".join(((await loc.first.inner_text()) or "").split())
+                if text and not is_noisy_assignment_title(text):
+                    return text[:200]
+        except Exception:
+            continue
+    return ""
+
+
+async def _visible_body_text(page) -> str:
+    loc = page.locator("d2l-html-block, .d2l-htmlblock, .d2l-body, d2l-collapsible-panel")
+    chunks: list[str] = []
+    try:
+        n = await loc.count()
+    except Exception:
+        n = 0
+    for i in range(min(n, 12)):
+        try:
+            text = (await loc.nth(i).inner_text() or "").strip()
+        except Exception:
+            continue
+        if text:
+            chunks.append(text)
+    if chunks:
+        return "\n".join(chunks)
+    try:
+        return (await page.locator("main, body").first.inner_text())[:8000]
+    except Exception:
+        return ""
+
+
+async def scrape_assignment_detail(page, org_id: str, href: str, base: str) -> dict[str, Any] | None:
+    url = _abs_url(base, href)
+    if not url or _is_api_url(url):
+        return None
+    if not await _goto_html(page, url):
+        return None
+    title = await _heading_text(page)
+    body = await _visible_body_text(page)
+    blob = f"{title}\n{body}"
+    due_dt = extract_due_from_text(blob)
+    if is_noisy_assignment_title(title):
+        title = ""
+    if not title:
+        return None
+    db_match = _DB_ID_RE.search(href) or _DB_ID_RE.search(page.url or "")
+    d2l_id = db_match.group(1) if db_match else _stable_id(org_id, title)
+    return dropbox_from_dom(
+        title,
+        due_dt.isoformat() if due_dt else None,
+        body,
+        d2l_id,
+        href=url,
+    )
+
+
+async def crawl_content_modules(page, org_id: str, base: str, dest_dir: Path) -> dict[str, Path]:
+    saved: dict[str, Path] = {}
+    urls = [
+        f"{base}/d2l/le/content/{org_id}/Home",
+        f"{base}/d2l/le/lessons/{org_id}",
+        f"{base}/d2l/lms/content/home.d2l?ou={org_id}",
+    ]
+    topic_hrefs: list[str] = []
+    for url in urls:
+        if not await _goto_html(page, url):
+            continue
+        await _expand_content_modules(page)
+        saved.update(await _download_page_files(page, dest_dir))
+        links = await _locator_count_text(
+            page.locator(
+                "a[href*='viewContent'], a[href*='/topics/'], a[href*='content/viewer'], "
+                "a[href*='/le/content/']"
+            ),
+            limit=80,
+        )
+        for href, text in links:
+            if not href or _is_api_url(href):
+                continue
+            if text.lower() in _SKIP_TITLES:
+                continue
+            abs_url = _abs_url(base, href)
+            if org_id not in abs_url and f"ou={org_id}" not in abs_url:
+                continue
+            topic_hrefs.append(abs_url)
+    seen: set[str] = set()
+    unique: list[str] = []
+    for href in topic_hrefs:
+        if href in seen:
+            continue
+        seen.add(href)
+        unique.append(href)
+    for href in unique[:40]:
+        if not await _goto_html(page, href):
+            continue
+        saved.update(await _download_page_files(page, dest_dir))
     return saved
 
 
-def ingest_live(settings: Settings | None = None, *, headed: bool = True) -> dict[str, int]:
-    """Live onQ ingest via headed Chromium: captured homepage XHR, then DOM scrape.
+async def crawl_announcement_pages(
+    page, org_id: str, base: str, dest_dir: Path, existing: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], dict[str, Path]]:
+    saved: dict[str, Path] = {}
+    items = list(existing)
+    await _goto_html(page, f"{base}/d2l/lms/news/main.d2l?ou={org_id}")
+    items = _merge_named_items(items, await scrape_announcements_dom(page, org_id))
+    saved.update(await _download_page_files(page, dest_dir))
+    links = await _locator_count_text(
+        page.locator("a[href*='newsid='], a[href*='NewsId='], a[href*='view.d2l']"),
+        limit=30,
+    )
+    for href, text in links[:20]:
+        url = _abs_url(base, href)
+        if not url or _is_api_url(url):
+            continue
+        if not await _goto_html(page, url):
+            continue
+        heading = await _heading_text(page) or text
+        body = await _visible_body_text(page)
+        match = _NEWS_ID_RE.search(href)
+        items.append(news_from_dom(heading, body or heading, match.group(1) if match else None))
+        saved.update(await _download_page_files(page, dest_dir, limit=10))
+    return _merge_named_items([], items), saved
 
-    Brightspace rejects scripted LE/LP fetches (HTTP 403) even inside an open
-    tab. This path never issues those calls via a request client or fetch().
-    Default is headed (headless=False) on the persistent data/browser/ profile.
-    """
-    import asyncio
 
-    return asyncio.run(_ingest_live_async(settings or get_settings(), headed=headed))
+async def crawl_dropbox_pages(
+    page, org_id: str, base: str, dest_dir: Path, existing: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], dict[str, Path]]:
+    saved: dict[str, Path] = {}
+    collected: list[dict[str, Any]] = list(existing)
+    list_urls = [
+        f"{base}/d2l/lms/dropbox/user/folders_list.d2l?ou={org_id}",
+        f"{base}/d2l/le/{org_id}/assignments/list",
+        f"{base}/d2l/le/dropbox/{org_id}/List",
+    ]
+    hrefs: list[tuple[str, str]] = []
+    for url in list_urls:
+        if not await _goto_html(page, url):
+            continue
+        collected = _merge_named_items(collected, await scrape_assignments_dom(page, org_id))
+        saved.update(await _download_page_files(page, dest_dir))
+        for item in collected:
+            href = item.get("Url") or ""
+            name = item.get("Name") or ""
+            if href and not is_noisy_assignment_title(name):
+                hrefs.append((_abs_url(base, href), name))
+    seen: set[str] = set()
+    for href, _name in hrefs:
+        if not href or href in seen or _is_api_url(href):
+            continue
+        seen.add(href)
+        detail = await scrape_assignment_detail(page, org_id, href, base)
+        if detail:
+            collected = _merge_named_items(collected, [detail])
+        saved.update(await _download_page_files(page, dest_dir, limit=12))
+        if len(seen) >= 30:
+            break
+    cleaned = [item for item in collected if not is_noisy_assignment_title(str(item.get("Name") or ""))]
+    return cleaned, saved
+
+
+def complete_live_ingest(
+    settings: Settings,
+    enrollments: list[dict[str, Any]],
+    news_by_org: dict[str, list[dict[str, Any]]],
+    dropbox_by_org: dict[str, list[dict[str, Any]]],
+    attachment_files: dict[str, Path],
+) -> dict[str, int]:
+    """SQLite upsert + parse downloaded files + Chroma embed + replan. No extra CLI."""
+    from school_secretary.agents.planner import replan_all
+    from school_secretary.calendar_sync import sync_calendar
+    from school_secretary.db.session import init_db
+    from school_secretary.rag.index import index_documents
+
+    init_db(settings)
+    counts = ingest_payloads(settings, enrollments, news_by_org, dropbox_by_org, attachment_files)
+    indexed = index_documents(settings, force=True)
+    with session_scope(settings) as session:
+        planned = replan_all(session)
+    calendar = sync_calendar(settings)
+    counts["indexed"] = indexed
+    counts["planned"] = planned
+    counts["calendar_events"] = int(calendar.get("events") or 0)
+    return counts
+
+
+def ingest_raw(settings: Settings | None = None) -> dict[str, int]:
+    """Parse `data/raw/` JSON + downloaded files into SQLite and embed (no browser)."""
+    settings = settings or get_settings()
+    from school_secretary.agents.planner import replan_all
+    from school_secretary.calendar_sync import sync_calendar
+    from school_secretary.db.session import init_db
+    from school_secretary.rag.index import index_documents
+
+    init_db(settings)
+    payloads = ingest_from_raw_dir(settings)
+
+    indexed = index_documents(settings, force=True)
+    with session_scope(settings) as session:
+        planned = replan_all(session)
+    calendar = sync_calendar(settings)
+    payloads["indexed"] = indexed
+    payloads["planned"] = planned
+    payloads["calendar_events"] = int(calendar.get("events") or 0)
+    return payloads
 
 
 async def ingest_live_from_context(settings: Settings, context, page) -> dict[str, int]:
-    """Populate SQLite from the open headed onQ tab. Used by login and ingest --live."""
-    from school_secretary.db.session import init_db
+    """Populate SQLite from the open headed onQ tab. Used by login and ingest --live.
 
+    Walks content modules, announcements, and dropboxes; clicks downloads into
+    data/raw/; then parses PDFs and embeds into Chroma before returning.
+    """
     base = settings.onq_base_url.rstrip("/")
     home = f"{base}/d2l/home"
     capture = OnqXhrCapture()
@@ -789,29 +1050,37 @@ async def ingest_live_from_context(settings: Settings, context, page) -> dict[st
             news_by_org.get(org_id, []) + capture.news_by_org.get(org_id, []),
             await scrape_announcements_dom(page, org_id),
         )
-        attachment_files.update(await _download_visible_pdfs(page, raw_dir))
+        attachment_files.update(await _download_page_files(page, raw_dir))
 
-        if not news_by_org[org_id]:
-            await _goto_html(page, f"{base}/d2l/lms/news/main.d2l?ou={org_id}")
-            news_by_org[org_id] = _merge_named_items(
-                capture.news_by_org.get(org_id, []),
-                await scrape_announcements_dom(page, org_id),
-            )
-
-        await _goto_html(page, f"{base}/d2l/lms/dropbox/user/folders_list.d2l?ou={org_id}")
-        dropbox_by_org[org_id] = _merge_named_items(
-            dropbox_by_org.get(org_id, []) + capture.dropbox_by_org.get(org_id, []),
-            await scrape_assignments_dom(page, org_id),
+        news_items, news_files = await crawl_announcement_pages(
+            page, org_id, base, raw_dir, news_by_org[org_id]
         )
-        if not dropbox_by_org[org_id]:
-            await _goto_html(page, f"{base}/d2l/le/{org_id}/assignments/list")
-            dropbox_by_org[org_id] = _merge_named_items(
-                capture.dropbox_by_org.get(org_id, []),
-                await scrape_assignments_dom(page, org_id),
-            )
+        news_by_org[org_id] = news_items
+        attachment_files.update(news_files)
+        attachment_files.update(await crawl_content_modules(page, org_id, base, raw_dir))
 
-    init_db(settings)
-    return ingest_payloads(settings, enrollments, news_by_org, dropbox_by_org, attachment_files)
+        drop_items, drop_files = await crawl_dropbox_pages(
+            page,
+            org_id,
+            base,
+            raw_dir,
+            dropbox_by_org.get(org_id, []) + capture.dropbox_by_org.get(org_id, []),
+        )
+        dropbox_by_org[org_id] = drop_items
+        attachment_files.update(drop_files)
+
+    return complete_live_ingest(settings, enrollments, news_by_org, dropbox_by_org, attachment_files)
+
+
+def ingest_live(settings: Settings | None = None, *, headed: bool = True) -> dict[str, int]:
+    """Headed Chromium: crawl content/dropbox, download files, parse, and embed.
+
+    Brightspace rejects scripted LE/LP fetches. This path clicks in the open tab.
+    Default is headed (headless=False) on the persistent data/browser/ profile.
+    """
+    import asyncio
+
+    return asyncio.run(_ingest_live_async(settings or get_settings(), headed=headed))
 
 
 async def _ingest_live_async(settings: Settings, *, headed: bool = True) -> dict[str, int]:

@@ -126,31 +126,32 @@ def render_briefing(kind: str, settings: Settings | None = None, now: datetime |
                 posted_cmp = posted
             if now - posted_cmp <= window + timedelta(days=2):
                 recent.append(ann)
-        title = "Morning briefing" if kind == "morning" else "Evening wrap-up"
+        title = "**Morning briefing**" if kind == "morning" else "**Evening wrap-up**"
         lines = [
             f"{title} — {now.strftime('%A %d %b %Y %H:%M %Z')}",
             "",
+            "### Focus",
             format_habit_summary(session, now),
             suggest_focus(session, now),
             suggested_block(session, now),
             "",
-            "Announcements:",
+            "### Announcements",
         ]
         if recent:
             for ann in recent[:5]:
                 code = ann.course.code
-                lines.append(f"  - [{ann.category}] {code}: {ann.title}")
+                lines.append(f"- **{code}:** {ann.title}")
         else:
-            lines.append("  (none in the recent window)")
+            lines.append("_None in the recent window._")
         lines.append("")
-        lines.append("Coming due:")
+        lines.append("### Coming due")
         if due_soon:
             for row in due_soon[:6]:
                 due = row.due_at
                 due_s = due.strftime("%a %b %d %H:%M")
-                lines.append(f"  - {row.course.code}: {row.title} ({due_s})")
+                lines.append(f"- **{row.course.code}:** {row.title} ({due_s})")
         else:
-            lines.append("  (nothing in the next 21 days)")
+            lines.append("_Nothing in the next 21 days._")
         pending_q = (
             session.query(SubTask)
             .filter(SubTask.status == "pending")
@@ -162,23 +163,24 @@ def render_briefing(kind: str, settings: Settings | None = None, now: datetime |
         pending_steps = pending_q.limit(5).all()
         lines.append("")
         if kind == "evening":
-            lines.append("Open micro-deadlines:")
+            lines.append("### Open micro-deadlines")
         else:
-            lines.append("Next planned steps:")
+            lines.append("### Next planned steps")
         if pending_steps:
             for task in pending_steps:
                 due = task.due_at
                 due_s = due.strftime("%a %b %d %H:%M") if due else "?"
                 code = task.assignment.course.code if task.assignment else ""
-                lines.append(f"  - {code}: {task.title} ({due_s})")
+                lines.append(f"- **{code}:** {task.title} ({due_s})")
         else:
-            lines.append("  (run /plan on an assignment to generate micro-deadlines)")
-        ics = settings.calendar_dir / "school-secretary.ics"
+            lines.append("_Run /plan on an assignment for a work plan. You write the work._")
         lines.append("")
+        lines.append("### Calendar")
+        ics = settings.calendar_dir / "school-secretary.ics"
         if ics.exists():
-            lines.append(f"Calendar: {ics} — import into Google, or set GOOGLE_OAUTH_* and run calendar-sync.")
+            lines.append("Local calendar file is up to date — import it into Google Calendar, or connect Google OAuth.")
         else:
-            lines.append("Calendar: run `uv run school-secretary calendar-sync` to write an ICS file.")
+            lines.append("Run /calendar to refresh deadlines.")
         record_study_session(
             session,
             minutes=0,
@@ -190,11 +192,15 @@ def render_briefing(kind: str, settings: Settings | None = None, now: datetime |
             lines += ["", "Wrap-up: log what you actually studied so tomorrow's plan is honest. /study CISC 235 45"]
         else:
             lines += ["", "Ask a syllabus question with /ask, or /plan the next lab. Scaffolding only — you write the work."]
-        return "\n".join(lines)
+        from school_secretary.agents.persona import polish_outgoing
+
+        return polish_outgoing("\n".join(lines))
 
 
 def ask(question: str, settings: Settings | None = None) -> str:
-    return answer_question(question, settings=settings)
+    from school_secretary.agents.persona import polish_outgoing
+
+    return polish_outgoing(answer_question(question, settings=settings))
 
 
 def plan_and_format(query: str, settings: Settings | None = None) -> str:

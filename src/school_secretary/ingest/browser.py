@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shutil
 from pathlib import Path
 
@@ -23,7 +24,8 @@ Run this on YOUR machine (Windows WSL), not a remote cloud desktop:
 Playwright storage state is saved to {storage_state_path}
 (and copied to {session_copy} so older readers still work).
 The persistent profile stays in {profile_dir}. After you press Enter, this same
-window reads course tiles (captured homepage requests, then DOM) into SQLite.
+window crawls content, announcements, and dropbox folders, downloads files into
+data/raw/, then embeds them before Chromium closes. You do not download PDFs by hand.
 """.strip()
 
 
@@ -63,6 +65,7 @@ async def _login_async(settings: Settings) -> Path:
         context = await playwright.chromium.launch_persistent_context(
             user_data_dir=str(settings.browser_profile_dir),
             headless=False,
+            accept_downloads=True,
             viewport={"width": 1280, "height": 900},
         )
         page = context.pages[0] if context.pages else await context.new_page()
@@ -79,7 +82,7 @@ async def _login_async(settings: Settings) -> Path:
         _write_storage_state_copy(settings, dest)
         print(f"Saved Playwright storage state to {dest}")
         print(f"Copied to {settings.session_json_copy_path} as well.")
-        print("Reading course tiles from this window (captured page requests, then DOM)...")
+        print("Crawling content, dropbox, and announcements — downloading files automatically...")
         from school_secretary.db.session import init_db
         from school_secretary.ingest.brightspace import IngestError, ingest_live_from_context
 
@@ -115,6 +118,7 @@ async def _open_persistent_context(settings: Settings, *, headless: bool):
         context = await playwright.chromium.launch_persistent_context(
             user_data_dir=str(settings.browser_profile_dir),
             headless=headless,
+            accept_downloads=True,
             viewport={"width": 1280, "height": 900},
         )
         await _overlay_storage_state(context, state)
@@ -136,6 +140,83 @@ async def _overlay_storage_state(context, state_path: Path) -> None:
         return
 
 
+def sanitize_filename(name: str) -> str:
+    base = Path(name or "download.bin").name
+    cleaned = re.sub(r"[^\w.\- ()]+", "_", base).strip("._")
+    return (cleaned or "download.bin")[:180]
+
+
+async def save_download(download, dest_dir: Path) -> Path:
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / sanitize_filename(download.suggested_filename or "download.bin")
+    await download.save_as(str(dest))
+    return dest
+
+
+async def click_and_save_download(page, locator, dest_dir: Path, timeout: int = 8_000) -> Path | None:
+    try:
+        async with page.expect_download(timeout=timeout) as pending:
+            await locator.click(timeout=min(timeout, 4_000))
+        return await save_download(await pending.value, dest_dir)
+    except Exception:
+        return None
+
+
+async def download_page_files(page, dest_dir: Path, limit: int = 20) -> dict[str, Path]:
+    """Click in-page download/file links. Never uses a scripted API client."""
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    saved: dict[str, Path] = {}
+    selectors = [
+        "a[href$='.pdf' i]",
+        "a[href*='.pdf?' i]",
+        "a[href$='.docx' i]",
+        "a[href*='.docx?' i]",
+        "a[href$='.doc' i]",
+        "a[href$='.pptx' i]",
+        "a[href$='.xlsx' i]",
+        "a[href*='download' i]",
+        "a[href*='FileDownload' i]",
+        "a[href*='downloadFile' i]",
+        "a[href*='getFile' i]",
+        "a[download]",
+        "d2l-button:has-text('Download')",
+        "button:has-text('Download')",
+        "a:has-text('Download')",
+        "a:has-text('.pdf')",
+        "a:has-text('.docx')",
+    ]
+    for selector in selectors:
+        loc = page.locator(selector)
+        try:
+            count = await loc.count()
+        except Exception:
+            continue
+        for index in range(min(count, limit)):
+            path = await click_and_save_download(page, loc.nth(index), dest_dir)
+            if path is not None and path.exists():
+                saved[path.name] = path
+            if len(saved) >= limit:
+                return saved
+    hrefs = await _file_hrefs_on_page(page)
+    for link in hrefs:
+        if "/d2l/api/le/" in link or "/d2l/api/lp/" in link:
+            continue
+        filename = sanitize_filename(link.rsplit("/", 1)[-1].split("?")[0] or "download.pdf")
+        dest = dest_dir / filename
+        if dest.exists():
+            saved[filename] = dest
+            continue
+        try:
+            await download_with_dom(page, link, dest)
+            if dest.exists():
+                saved[dest.name] = dest
+        except Exception:
+            continue
+        if len(saved) >= limit:
+            break
+    return saved
+
+
 async def download_with_dom(page, url: str, dest: Path) -> Path:
     dest.parent.mkdir(parents=True, exist_ok=True)
     async with page.expect_download() as pending:
@@ -149,12 +230,32 @@ async def download_with_dom(page, url: str, dest: Path) -> Path:
     return dest
 
 
+async def _file_hrefs_on_page(page) -> list[str]:
+    """Collect file URLs from the current DOM. Does not navigate."""
+    try:
+        hrefs = await page.eval_on_selector_all(
+            "a[href]",
+            """els => els.map(e => e.href).filter(h => {
+                if (!h) return false;
+                const lower = h.toLowerCase();
+                return (
+                    lower.includes('.pdf') ||
+                    lower.includes('.docx') ||
+                    lower.includes('.doc') ||
+                    lower.includes('.pptx') ||
+                    lower.includes('.xlsx') ||
+                    lower.includes('download') ||
+                    lower.includes('filedownload') ||
+                    lower.includes('getfile')
+                );
+            })""",
+        )
+    except Exception:
+        return []
+    return list(dict.fromkeys(hrefs or []))
+
+
 async def scrape_pdf_links(page, course_url: str) -> list[str]:
-    await page.goto(course_url, wait_until="domcontentloaded")
-    hrefs = await page.eval_on_selector_all(
-        "a[href]",
-        """els => els.map(e => e.href).filter(h =>
-            h && (h.toLowerCase().includes('.pdf') || h.toLowerCase().includes('download'))
-        )""",
-    )
-    return list(dict.fromkeys(hrefs))
+    if course_url and (page.url or "").rstrip("/") != course_url.rstrip("/"):
+        await page.goto(course_url, wait_until="domcontentloaded")
+    return await _file_hrefs_on_page(page)

@@ -86,6 +86,14 @@ def test_live_ingest_source_does_not_use_httpx_or_scripted_api():
     assert "page.locator" in text
     assert "scrape_course_tiles" in text
     assert "/d2l/home" in text
+    assert "crawl_content_modules" in text
+    assert "crawl_announcement_pages" in text
+    assert "crawl_dropbox_pages" in text
+    assert "complete_live_ingest" in text
+    assert "index_documents" in text
+    assert "ingest_raw" in text
+    assert "download_page_files" in text
+    assert "is_noisy_assignment_title" in text
 
 
 def test_live_ingest_opens_onq_home_networkidle_before_scrape():
@@ -157,11 +165,15 @@ def test_ingest_live_defaults_headed_and_reuses_persistent_context():
     assert "ingest_live_from_context" in browser
     assert "user_data_dir" in browser
     assert "headless=False" in browser
+    assert "accept_downloads=True" in browser
+    assert "download_page_files" in browser
     assert "data/browser" in browser or "browser_profile_dir" in browser
 
     cli = Path("src/school_secretary/cli.py").read_text(encoding="utf-8")
     assert "--headed/--headless" in cli
     assert "headed=headed" in cli
+    assert "--raw" in cli
+    assert "ingest_raw" in cli
 
 
 def test_classify_natural_onq_xhr_and_dom_payloads(tmp_path, monkeypatch):
@@ -278,3 +290,89 @@ def test_xhr_capture_keeps_natural_json_and_ignores_403():
     assert parsed is not None
     assert parsed["code"] == "CISC 365"
     assert capture.news_by_org == {}
+
+
+def test_ingest_skips_noisy_dropbox_titles_and_keeps_due_dates(tmp_path, monkeypatch):
+    monkeypatch.setenv("SCHOOL_SECRETARY_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "")
+    from school_secretary.config import reset_settings
+    from school_secretary.db.session import reset_engine
+
+    reset_settings()
+    reset_engine()
+    from school_secretary.config import get_settings
+    from school_secretary.db.models import Assignment
+    from school_secretary.db.session import session_scope
+
+    settings = get_settings()
+    init_db(settings)
+    tile = enrollment_from_tile("999002", "MECH 221 Design")
+    counts = ingest_payloads(
+        settings,
+        [tile],
+        {"999002": []},
+        {
+            "999002": [
+                dropbox_from_dom("Not Submitted", None, "", "noise-1"),
+                dropbox_from_dom("1 Submission, 1 File", None, "", "noise-2"),
+                dropbox_from_dom(
+                    "Lab 3 — Orthographic CAD",
+                    None,
+                    "Due: Friday, October 3, 2026 at 11:59 PM. Complete the CAD drawing.",
+                    "cad-1",
+                ),
+            ]
+        },
+    )
+    assert counts["assignments"] == 1
+    with session_scope(settings) as session:
+        row = session.query(Assignment).one()
+        assert row.title == "Lab 3 — Orthographic CAD"
+        assert row.due_at is not None
+        assert row.due_at.month == 10 and row.due_at.day == 3
+
+
+def test_ingest_raw_parses_files_and_embeds(tmp_path, monkeypatch):
+    monkeypatch.setenv("SCHOOL_SECRETARY_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "")
+    from school_secretary.config import reset_settings
+    from school_secretary.db.session import reset_engine
+
+    reset_settings()
+    reset_engine()
+    from school_secretary.config import get_settings
+    from school_secretary.ingest.brightspace import ingest_raw
+    from school_secretary.rag.extract import write_pdf
+
+    settings = get_settings()
+    init_db(settings)
+    course_dir = settings.raw_dir / "888001"
+    course_dir.mkdir(parents=True)
+    (course_dir / "enrollment.json").write_text(
+        '{"OrgUnit":{"Id":888001,"Name":"CISC 999 Algorithms","Code":"CISC999","Type":{"Id":3,"Code":"Course Offering"}}}',
+        encoding="utf-8",
+    )
+    (course_dir / "news.json").write_text("[]", encoding="utf-8")
+    (course_dir / "dropbox.json").write_text(
+        '[{"Id":"lab1","Name":"Lab 1 — Recurrence","DueDate":"2026-09-20T23:59:00Z","Instructions":{"Text":"Implement insert and search. Due: Sep 20, 2026."}}]',
+        encoding="utf-8",
+    )
+    write_pdf(
+        course_dir / "lab1.pdf",
+        "Lab 1 — Recurrence",
+        ["Part A: problem statement for the recurrence.", "Implement insert and search yourself."],
+    )
+    counts = ingest_raw(settings)
+    assert counts["courses"] == 1
+    assert counts["assignments"] == 1
+    assert counts["documents"] >= 1
+    assert counts["indexed"] >= 1
+    assert counts["planned"] == 1
+    with session_scope(settings) as session:
+        assignment = session.query(Assignment).one()
+        assert assignment.due_at is not None
+        titles = " ".join(task.title for task in assignment.subtasks).lower()
+        assert "read the assignment instructions" not in titles
+        assert "problem statement" in titles or "insert" in titles

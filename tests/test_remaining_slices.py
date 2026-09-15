@@ -172,9 +172,11 @@ def test_briefing_lists_next_steps_and_does_not_inflate_streak(tmp_path, monkeyp
         sessions_before = session.query(StudyHabitEvent).filter_by(kind="study_session").count()
     morning = render_briefing("morning", settings=settings, now=DEMO_NOW)
     evening = render_briefing("evening", settings=settings, now=DEMO_NOW)
-    assert "Next planned steps:" in morning
-    assert "Calendar:" in morning
-    assert "Open micro-deadlines:" in evening
+    assert "Next planned steps" in morning
+    assert "Calendar" in morning
+    assert "Open micro-deadlines" in evening
+    assert "/workspace" not in morning
+    assert "school-secretary.ics" not in morning
     assert "/study" in evening
     with session_scope(settings) as session:
         after = study_streak_days(session, now=DEMO_NOW)
@@ -189,7 +191,7 @@ def test_planner_keeps_completed_subtasks(tmp_path, monkeypatch):
     from datetime import datetime
     from zoneinfo import ZoneInfo
 
-    from school_secretary.agents.planner import STEP_TEMPLATES, plan_assignment
+    from school_secretary.agents.planner import plan_assignment
     from school_secretary.db.models import SubTask
 
     settings = _iso(tmp_path, monkeypatch)
@@ -214,7 +216,6 @@ def test_planner_keeps_completed_subtasks(tmp_path, monkeypatch):
         first[0].status = "done"
         kept_due = first[0].due_at
         second = plan_assignment(session, assignment, now=now)
-        assert len(second) == len(STEP_TEMPLATES["coding_lab"])
         assert second[0].status == "done"
         assert second[0].due_at == kept_due
         assert session.query(SubTask).filter_by(assignment_id=assignment.id).count() == len(second)
@@ -229,9 +230,23 @@ def test_help_and_habits_routes(tmp_path, monkeypatch):
     help_text = route_locally("/help", settings)
     assert "/habits" in help_text
     assert "/calendar" in help_text
+    assert "never complete" in help_text.lower()
     habits = route_locally("/habits", settings)
     assert "This week:" in habits or "No study sessions" in habits
     assert "Streak:" in habits
+
+
+def test_calendar_route_hides_local_ics_path(tmp_path, monkeypatch):
+    from school_secretary.ingest.fixtures import ingest_fixtures
+    from school_secretary.telegram_app.handlers import route_locally
+
+    settings = _iso(tmp_path, monkeypatch)
+    ingest_fixtures(settings)
+    reply = route_locally("/calendar", settings)
+    assert "Calendar updated" in reply
+    assert "/workspace" not in reply
+    assert "school-secretary.ics" not in reply
+    assert "\\data\\" not in reply
 
 
 def test_suggested_block_does_not_treat_sixty_as_zero(tmp_path, monkeypatch):

@@ -92,21 +92,26 @@ def extractive_answer(question: str, retrievals: list[Retrieval]) -> str:
                 ranked.append((sent_score, sentence, item.filename))
     if not ranked:
         if not retrievals:
-            return "I could not find that in the indexed course PDFs."
+            return "I could not find that in the indexed course materials."
         snippet = retrievals[0].text.strip().split("\n")[0]
-        return f"{snippet}\n\n(Source: {retrievals[0].filename})"
+        course = retrievals[0].course_code
+        suffix = f" ({course})" if course else ""
+        return f"{snippet}{suffix}"
     ranked.sort(key=lambda row: row[0], reverse=True)
     best = ranked[0]
     extras = []
     seen = {best[1]}
-    for _, sentence, filename in ranked[1:4]:
+    for _, sentence, _filename in ranked[1:4]:
         if sentence not in seen:
-            extras.append((sentence, filename))
+            extras.append(sentence)
             seen.add(sentence)
-    lines = [best[1], "", f"(Source: {best[2]})"]
-    for sentence, filename in extras[:2]:
-        if filename != best[2]:
-            lines.append(f"Related ({filename}): {sentence}")
+    course = retrievals[0].course_code
+    lines = [best[1]]
+    if course:
+        lines.extend(["", f"_{course}_"])
+    for sentence in extras[:2]:
+        if sentence != best[1]:
+            lines.append(sentence)
     return "\n".join(lines)
 
 
@@ -214,14 +219,19 @@ def retrieve(question: str, settings: Settings | None = None, n: int = 8) -> lis
 def answer_question(question: str, settings: Settings | None = None) -> str:
     retrievals = retrieve(question, settings=settings)
     extractive = extractive_answer(question, retrievals)
-    context = "\n\n".join(f"[{item.filename}]\n{item.text}" for item in retrievals[:4])
+    context = "\n\n".join(
+        f"[{item.course_code or 'course materials'}]\n{item.text}" for item in retrievals[:4]
+    )
     llm = complete(
         system=(
-            "You are My School Secretary, a Queen's onQ study assistant. "
+            "You are My School Secretary, a Queen's onQ executive assistant. "
             "Answer only from the provided syllabus/handout excerpts. "
-            "Cite the filename. If the excerpts do not contain the answer, say so. "
+            "Clean Markdown. Name the course, never filenames, local paths, or '(Source: …)' labels. "
+            "If the excerpts do not contain the answer, say so. "
             "Never write finished assignment solutions."
         ),
         user=f"Question: {question}\n\nExcerpts:\n{context}",
     )
-    return llm or extractive
+    from school_secretary.agents.persona import polish_outgoing
+
+    return polish_outgoing(llm or extractive)

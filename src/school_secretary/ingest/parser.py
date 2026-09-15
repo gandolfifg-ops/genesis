@@ -8,9 +8,50 @@ from bs4 import BeautifulSoup
 from dateutil import parser as date_parser
 
 DUE_PATTERNS = [
-    re.compile(r"\bdue(?:\s+date)?\s*[:\-]\s*([^<\n]+)", re.IGNORECASE),
-    re.compile(r"\bdeadline\s*[:\-]\s*([^<\n]+)", re.IGNORECASE),
+    re.compile(r"\bdue(?:\s+date)?\s*[:\-]?\s*([^<\n]+)", re.IGNORECASE),
+    re.compile(r"\bdue on\s+([^<\n]+)", re.IGNORECASE),
+    re.compile(r"\bdeadline\s*[:\-]?\s*([^<\n]+)", re.IGNORECASE),
+    re.compile(r"\bavailable until\s*[:\-]?\s*([^<\n]+)", re.IGNORECASE),
+    re.compile(r"\bcloses?\s+on\s+([^<\n]+)", re.IGNORECASE),
 ]
+MONTH_DATE_RE = re.compile(
+    r"\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|"
+    r"sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?\s+\d{1,2},?\s+\d{4}"
+    r"(?:\s+\d{1,2}:\d{2}\s*(?:am|pm)?)?",
+    re.IGNORECASE,
+)
+ISO_DATE_RE = re.compile(
+    r"\b(\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?)"
+)
+US_DATE_RE = re.compile(
+    r"\b(\d{1,2}/\d{1,2}/\d{4}(?:\s+\d{1,2}:\d{2}\s*(?:am|pm)?)?)",
+    re.IGNORECASE,
+)
+NOISY_TITLE_EXACT = {
+    "not submitted",
+    "submitted",
+    "completion",
+    "evaluation",
+    "new",
+    "folder",
+    "feedback",
+    "score",
+    "grade",
+    "completed",
+    "in progress",
+    "read only",
+    "1 submission, 1 file",
+    "0 submissions, 0 files",
+    "1 submission, 0 files",
+    "0 submissions, 1 file",
+}
+NOISY_TITLE_RE = re.compile(
+    r"^\d+\s+submissions?(?:,\s+\d+\s+files?)?$"
+    r"|^\d+\s+files?$"
+    r"|^submissions?$"
+    r"|^unread$",
+    re.IGNORECASE,
+)
 
 WORD_COUNT_RE = re.compile(r"(\d{3,5})\s*(?:word|words)\b", re.IGNORECASE)
 ATTACHMENT_EXT = (".pdf", ".docx", ".doc", ".txt")
@@ -47,13 +88,51 @@ def body_text(payload: dict[str, Any] | str | None) -> str:
 
 
 def extract_due_from_text(text: str) -> datetime | None:
+    blob = text or ""
     for pattern in DUE_PATTERNS:
-        match = pattern.search(text)
+        match = pattern.search(blob)
         if match:
-            dt = parse_datetime(match.group(1))
+            candidate = match.group(1).split(". ")[0].strip()
+            dt = parse_datetime(candidate)
+            if dt:
+                return dt
+    for pattern in (MONTH_DATE_RE, ISO_DATE_RE, US_DATE_RE):
+        match = pattern.search(blob)
+        if match:
+            dt = parse_datetime(match.group(0))
             if dt:
                 return dt
     return None
+
+
+def is_noisy_assignment_title(title: str | None) -> bool:
+    """True for dropbox status cells mistaken for folder names."""
+    text = " ".join((title or "").split())
+    if not text or len(text) < 3:
+        return True
+    lowered = text.lower().strip(" .")
+    if lowered in NOISY_TITLE_EXACT or lowered in _SKIP_NAV:
+        return True
+    if NOISY_TITLE_RE.match(lowered):
+        return True
+    return False
+
+
+_SKIP_NAV = {
+    "home",
+    "my courses",
+    "view all",
+    "view all courses",
+    "announcements",
+    "assignments",
+    "dropbox",
+    "content",
+    "grades",
+    "title",
+    "name",
+    "due date",
+    "more actions",
+}
 
 
 def extract_attachments_from_json(item: dict[str, Any]) -> list[dict[str, str]]:
@@ -154,9 +233,9 @@ def parse_dropbox_item(item: dict[str, Any]) -> dict[str, Any]:
         html = instructions_payload.get("Html") or ""
     instructions = body_text(instructions_payload)
     due = parse_datetime(item.get("DueDate") or item.get("dueDate"))
-    if due is None:
-        due = extract_due_from_text(instructions)
     title = item.get("Name") or item.get("name") or "Untitled assignment"
+    if due is None:
+        due = extract_due_from_text(f"{title}\n{instructions}")
     attachments = merge_attachments(
         extract_attachments_from_json(item),
         extract_attachments_from_html(html),

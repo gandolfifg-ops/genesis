@@ -33,15 +33,24 @@ def _target_chat_id(settings: Settings) -> str:
     return load_chat_id(settings.telegram_chat_id_path, settings.telegram_chat_id)
 
 
+async def _reply(update, text: str) -> None:
+    body = (text or "")[:4000]
+    try:
+        await update.message.reply_text(body, parse_mode="Markdown")
+    except Exception:
+        await update.message.reply_text(body)
+
+
 async def _cmd_start(update, context) -> None:
     settings: Settings = context.bot_data["settings"]
     if update.effective_chat:
         remember_chat_id(settings.telegram_chat_id_path, update.effective_chat.id)
-    await update.message.reply_text(
-        "My School Secretary is on. Commands: /ask /briefing /evening /plan /scaffold "
-        "/email /study /habits /calendar\n"
-        "Free-text questions go through RAG (OpenAI if keyed, otherwise local extractive answers).\n"
-        "I will never complete assignments — outlines and TODOs only."
+    await _reply(
+        update,
+        "**My School Secretary** is on.\n\n"
+        "Commands: `/ask` `/briefing` `/evening` `/plan` `/scaffold` "
+        "`/email` `/study` `/habits` `/calendar`\n\n"
+        "Free-text questions go through RAG. I will never complete assignments — outlines and TODOs only.",
     )
 
 
@@ -49,52 +58,52 @@ async def _cmd_ask(update, context) -> None:
     settings: Settings = context.bot_data["settings"]
     question = " ".join(context.args) if context.args else ""
     if not question:
-        await update.message.reply_text("Usage: /ask What is the late penalty for CISC 235?")
+        await _reply(update, "Usage: `/ask` What is the late penalty for CISC 235?")
         return
-    await update.message.reply_text(handle_user_text(question, settings)[:4000])
+    await _reply(update, handle_user_text(question, settings))
 
 
 async def _cmd_briefing(update, context) -> None:
     settings: Settings = context.bot_data["settings"]
-    await update.message.reply_text(render_briefing("morning", settings=settings)[:4000])
+    await _reply(update, render_briefing("morning", settings=settings))
 
 
 async def _cmd_evening(update, context) -> None:
     settings: Settings = context.bot_data["settings"]
-    await update.message.reply_text(render_briefing("evening", settings=settings)[:4000])
+    await _reply(update, render_briefing("evening", settings=settings))
 
 
 async def _cmd_plan(update, context) -> None:
     settings: Settings = context.bot_data["settings"]
     target = " ".join(context.args) or "Lab 2"
-    await update.message.reply_text(handle_user_text(f"/plan {target}", settings)[:4000])
+    await _reply(update, handle_user_text(f"/plan {target}", settings))
 
 
 async def _cmd_scaffold(update, context) -> None:
     settings: Settings = context.bot_data["settings"]
     target = " ".join(context.args) or "Lab 2"
-    await update.message.reply_text(handle_user_text(f"/scaffold {target}", settings)[:4000])
+    await _reply(update, handle_user_text(f"/scaffold {target}", settings))
 
 
 async def _cmd_email(update, context) -> None:
     settings: Settings = context.bot_data["settings"]
     topic = " ".join(context.args) or "office hours"
-    await update.message.reply_text(handle_user_text(f"/email {topic}", settings)[:4000])
+    await _reply(update, handle_user_text(f"/email {topic}", settings))
 
 
 async def _cmd_study(update, context) -> None:
     settings: Settings = context.bot_data["settings"]
-    await update.message.reply_text(handle_user_text("/study " + " ".join(context.args), settings)[:4000])
+    await _reply(update, handle_user_text("/study " + " ".join(context.args), settings))
 
 
 async def _cmd_calendar(update, context) -> None:
     settings: Settings = context.bot_data["settings"]
-    await update.message.reply_text(handle_user_text("/calendar", settings)[:4000])
+    await _reply(update, handle_user_text("/calendar", settings))
 
 
 async def _cmd_habits(update, context) -> None:
     settings: Settings = context.bot_data["settings"]
-    await update.message.reply_text(handle_user_text("/habits", settings)[:4000])
+    await _reply(update, handle_user_text("/habits", settings))
 
 
 async def _on_text(update, context) -> None:
@@ -105,7 +114,7 @@ async def _on_text(update, context) -> None:
     settings: Settings = context.bot_data["settings"]
     if update.effective_chat:
         remember_chat_id(settings.telegram_chat_id_path, update.effective_chat.id)
-    await update.message.reply_text(handle_user_text(update.message.text, settings)[:4000])
+    await _reply(update, handle_user_text(update.message.text, settings))
 
 
 async def _job_briefing(context, kind: str) -> None:
@@ -113,8 +122,11 @@ async def _job_briefing(context, kind: str) -> None:
     chat_id = _target_chat_id(settings)
     if not chat_id:
         return
-    text = render_briefing(kind, settings=settings)
-    await context.bot.send_message(chat_id=int(chat_id), text=text[:4000])
+    text = render_briefing(kind, settings=settings)[:4000]
+    try:
+        await context.bot.send_message(chat_id=int(chat_id), text=text, parse_mode="Markdown")
+    except Exception:
+        await context.bot.send_message(chat_id=int(chat_id), text=text)
 
 
 def run_bot(settings: Settings | None = None) -> None:
