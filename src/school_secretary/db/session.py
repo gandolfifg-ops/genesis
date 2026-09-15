@@ -1,3 +1,4 @@
+from school_secretary.config import _seed_database_if_missing
 from __future__ import annotations
 
 from collections.abc import Iterator
@@ -20,6 +21,8 @@ def _url(settings: Settings) -> str:
 
 
 def get_engine(settings: Settings | None = None):
+    s = settings or get_settings()
+    _seed_database_if_missing(s.data_dir)
     global _engine, _SessionLocal, _engine_url
     settings = settings or get_settings()
     url = _url(settings)

@@ -137,3 +137,17 @@ def get_settings() -> Settings:
 
 def reset_settings() -> None:
     get_settings.cache_clear()
+
+
+def _seed_database_if_missing(data_dir: Path) -> None:
+    target = data_dir / "secretary.db"
+    pkg_dir = Path(__file__).resolve().parent
+    bundled = pkg_dir / "data" / "secretary.db"
+    if not target.exists() or target.stat().st_size == 0:
+        if bundled.exists():
+            data_dir.mkdir(parents=True, exist_ok=True)
+            import shutil
+            shutil.copy2(bundled, target)
+            print(f"[BOOT SEED SUCCESS] Copied {bundled} ({bundled.stat().st_size} bytes) to {target}", flush=True)
+        else:
+            print(f"[BOOT SEED FAIL] Bundled DB not found at {bundled}", flush=True)
