@@ -1,3 +1,4 @@
+from datetime import datetime
 from __future__ import annotations
 
 import re
@@ -224,10 +225,14 @@ def answer_question(question: str, settings: Settings | None = None) -> str:
     )
     llm = complete(
         system=(
-            EXECUTIVE_SYSTEM
-            + " Answer only from the provided syllabus/handout excerpts. "
-            "Name the course, never filenames, local paths, or '(Source: …)' labels. "
-            "If the excerpts do not contain the answer, say so."
+            f"You are Jarvis, an executive student secretary. Today is {datetime.now().strftime("%A, %B %d, %Y")}.
+"
+            f"{EXECUTIVE_SYSTEM}
+"
+            "Synthesize relevant excerpts to answer the user request concisely. "
+            "Use the current date context above to infer relative dates like today, tomorrow, or upcoming deadlines. "
+            "If exact session dates for tomorrow are missing from excerpts, provide the most relevant course policies, "
+            "weekly schedule rules, or next upcoming deliverables available."
         ),
         user=f"Question: {question}\n\nExcerpts:\n{context}",
         settings=settings,
