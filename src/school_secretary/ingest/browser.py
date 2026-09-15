@@ -23,7 +23,7 @@ Run this on YOUR machine (Windows WSL), not a remote cloud desktop:
 Playwright storage state is saved to {storage_state_path}
 (and copied to {session_copy} so older readers still work).
 The persistent profile stays in {profile_dir}. After you press Enter, this same
-window fetches enrollments/news/dropbox into SQLite (no second Chromium launch).
+window reads course tiles (captured homepage requests, then DOM) into SQLite.
 """.strip()
 
 
@@ -79,7 +79,7 @@ async def _login_async(settings: Settings) -> Path:
         _write_storage_state_copy(settings, dest)
         print(f"Saved Playwright storage state to {dest}")
         print(f"Copied to {settings.session_json_copy_path} as well.")
-        print("Fetching onQ courses in this same window (LE/LP via the headed session)...")
+        print("Reading course tiles from this window (captured page requests, then DOM)...")
         from school_secretary.db.session import init_db
         from school_secretary.ingest.brightspace import IngestError, ingest_live_from_context
 

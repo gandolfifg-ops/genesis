@@ -158,7 +158,7 @@ uv run pytest
 # Live onQ — headed Chromium on your Windows desktop:
 uv run school-secretary login
 # NetID, password, Duo, wait for onQ homepage, press Enter.
-# That same window then fetches enrollments/news/dropbox into secretary.db.
+# That same window then reads course tiles (captured page requests, then DOM) into secretary.db.
 
 # Later refresh (headed, same data/browser/ profile — do not use --headless):
 uv run school-secretary ingest --live
@@ -191,7 +191,7 @@ uv run school-secretary login
 1. A **real Chromium** window opens on your Windows desktop (Playwright persistent profile, 1280×900).
 2. It goes to the Queen’s onQ login at **`https://onq.queensu.ca/d2l/home`**.
 3. Type your **NetID** and **password**, then approve **Duo MFA**.
-4. When you reach the **onQ homepage** (course tiles / Brightspace navbar), leave the window open, switch back to the **WSL terminal**, and **press Enter**. Live LE/LP ingest then runs **in that same headed window** before Chromium closes, so `data/secretary.db` is populated without a second launch.
+4. When you reach the **onQ homepage** (course tiles / Brightspace navbar), leave the window open, switch back to the **WSL terminal**, and **press Enter**. Live ingest then runs **in that same headed window**: it captures JSON the page already requested, then scrapes course tiles / announcements / assignments from the DOM. Chromium closes after SQLite is updated.
 
 **Where the session is saved**
 
@@ -215,13 +215,12 @@ Do **not** pass `--headless` after a headed login. Brightspace TLS/session cooki
 `ingest --live` (headed):
 
 1. Starts **headed Chromium** (`headless=False`) with the persistent profile `data/browser/` and overlays `storage_state.json` (Playwright forbids `storage_state=` on persistent launch)
-2. Opens `{ONQ_BASE_URL}/d2l/home` with `wait_until="networkidle"` so `d2lSessionVal` is set, then calls Brightspace LP/LE APIs **through that browser context** (not a standalone HTTP client):
-   - `/d2l/api/lp/1.47/enrollments/myenrollments/`
-   - `/d2l/api/le/1.47/{orgUnitId}/news/`
-   - `/d2l/api/le/1.47/{orgUnitId}/dropbox/folders/`
-3. Saves raw JSON under `data/raw/{orgUnitId}/`
-4. Downloads PDF attachments with the same browser request context; if that fails, scrapes `a[href]` PDF links from the course home as a DOM fallback
-5. Upserts Courses / Assignments / Announcements / Documents into SQLite (idempotent)
+2. Attaches `page.on("response", ...)` then opens `{ONQ_BASE_URL}/d2l/home` with `wait_until="networkidle"` so the homepage can fire its usual background requests
+3. If a captured response looks like enrollments, news, or dropbox JSON, keeps that payload (this is interception of **natural** page traffic — not a scripted LE/LP GET)
+4. Falls back to DOM scraping: course tiles (`d2l-enrollment-card` / `a[href*="/d2l/home/"]`), then each course home, announcements, and dropbox/assignments lists via `page.locator(...)`
+5. Saves raw JSON under `data/raw/{orgUnitId}/` and upserts Courses / Assignments / Announcements / Documents into SQLite (idempotent)
+
+Live ingest does **not** call `/d2l/api/le/...` or `/d2l/api/lp/...` through a Playwright request client or `fetch()`. Brightspace returns HTTP 403 for those scripted calls even inside an already-open tab.
 
 Fixture ingest (`ingest --fixtures` / `demo`) never launches Chromium. Never commit `.env` or `data/browser/`.
 

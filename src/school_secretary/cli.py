@@ -80,7 +80,7 @@ def ingest(
 
 @app.command()
 def login() -> None:
-    """Queen's SSO in a visible Chromium window; then live LE/LP ingest in that same session."""
+    """Queen's SSO in a visible Chromium window; then scrape onQ into SQLite before Chromium closes."""
     from school_secretary.ingest.browser import login as browser_login
 
     browser_login(get_settings())
