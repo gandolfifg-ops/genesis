@@ -151,3 +151,24 @@ def _seed_database_if_missing(data_dir: Path) -> None:
             print(f"[BOOT SEED SUCCESS] Copied {bundled} ({bundled.stat().st_size} bytes) to {target}", flush=True)
         else:
             print(f"[BOOT SEED FAIL] Bundled DB not found at {bundled}", flush=True)
+
+
+def force_seed_database() -> None:
+    data_dir = Path(os.getenv("SCHOOL_SECRETARY_DATA_DIR", "/app/data"))
+    target = data_dir / "secretary.db"
+    pkg_dir = Path(__file__).resolve().parent
+    bundled = pkg_dir / "data" / "secretary.db"
+    
+    if not target.exists() or target.stat().st_size == 0:
+        if bundled.exists():
+            data_dir.mkdir(parents=True, exist_ok=True)
+            import shutil
+            shutil.copy2(bundled, target)
+            print(f"[BOOT SEED SUCCESS] Copied {bundled} ({bundled.stat().st_size} bytes) to {target}", flush=True)
+        else:
+            print(f"[BOOT SEED FAIL] Bundled DB not found at {bundled}", flush=True)
+
+try:
+    force_seed_database()
+except Exception as e:
+    print(f"[BOOT SEED EXCEPTION] {e}", flush=True)
