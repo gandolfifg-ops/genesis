@@ -223,9 +223,9 @@ def answer_question(question: str, settings: Settings | None = None) -> str:
     context = "\n\n".join(
         f"[{item.course_code or 'course materials'}]\n{item.text}" for item in retrievals[:4]
     )
-    llm = complete(
+        llm = complete(
         system=(
-            f"You are Jarvis, an executive student secretary. Today is {datetime.now().strftime("%A, %B %d, %Y")}.
+            f"You are Jarvis, an executive student secretary. Today is {datetime.now().strftime('%A, %B %d, %Y')}.
 "
             f"{EXECUTIVE_SYSTEM}
 "
@@ -234,7 +234,9 @@ def answer_question(question: str, settings: Settings | None = None) -> str:
             "If exact session dates for tomorrow are missing from excerpts, provide the most relevant course policies, "
             "weekly schedule rules, or next upcoming deliverables available."
         ),
-        user=f"Question: {question}\n\nExcerpts:\n{context}",
+        user=f"Question: {question}
+Excerpts:
+{context}",
         settings=settings,
     )
     from school_secretary.agents.persona import polish_outgoing
